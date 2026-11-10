@@ -63,6 +63,8 @@ Cookie 檔案格式是名稱到字串值的 JSON 物件。Token／Cookie 檔案�
 
 ## 開發者導覽
 
+使用者流程、背景時序、工作／檔案狀態圖及完整資料字典，見 [架構與資料庫文件](docs/architecture.md)。兩個 SQLite 資料庫的參考 DDL 分別在 [工作資料庫](docs/state-schema.sql) 與 [Instagram 限速資料庫](docs/instagram-rate-schema.sql)。
+
 這個 repository 展示三平台下載器的實際程式流程、模組分工、輸入設定、持久化資料結構，以及下載／傳送失敗時的處理規則。可從 `__main__.py` 開始看啟動，再看 `worker.py` 的協調流程，接著閱讀 `core.py` 和各平台 runner。
 
 ### 一則訊息如何變成下載結果
@@ -127,3 +129,11 @@ Cookie 檔案格式是名稱到字串值的 JSON 物件。Token／Cookie 檔案�
 | [tests/test_instagram_stories_target.py](tests/test_instagram_stories_target.py) | 貼文轉限時動態目標的測試；驗證作者解析、extractor 初始化、iterator／session 關閉及失敗路徑。 |
 | [tests/test_instagram_timeline.py](tests/test_instagram_timeline.py) | timeline 分頁與解析測試；涵蓋 cursor／頁面重複、資料格式錯誤、空清單、頁數上限、輪播 ID 與可忽略的選填欄位錯誤。 |
 | [tests/test_instagram_transport.py](tests/test_instagram_transport.py) | Instagram HTTP／GraphQL transport 測試；涵蓋 429 冷卻、登入與驗證挑戰、重新導向、目標限制、請求預算和 session 資料使用。 |
+
+### 架構文件
+
+| 檔案 | 內容與用途 |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | 使用者流程、背景處理時序、工作／檔案狀態圖、兩個 SQLite 資料庫的 ER 圖、逐欄位說明及恢復界線。 |
+| [docs/state-schema.sql](docs/state-schema.sql) | 從核心初始化程式整理的工作資料庫 DDL，涵蓋 7 張表、外鍵、唯一鍵及索引。 |
+| [docs/instagram-rate-schema.sql](docs/instagram-rate-schema.sql) | 從 Instagram 限速器整理的 3 張表 DDL；只描述結構，初始化時間由程式設定。 |

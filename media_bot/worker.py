@@ -95,11 +95,11 @@ def handle_update(u):
     chat_id=chat['id'];text=m.get('text','').strip()
     if text.startswith('/'):
         command=text.split()[0].split('@')[0]
-        help_text='貼上 Instagram、TikTok 或 Twitter / X HTTPS 連結。IG／TikTok 單一貼文可選下載貼文或作者限時動態；多連結訊息最多 50 個。X 只支援單一貼文連結。檔案達 49 MiB 會保留在本機，不會傳送。'
+        help_text='貼上 Instagram、TikTok、Twitter / X 或 YouTube HTTPS 連結。IG／TikTok 單一貼文可選下載貼文或作者限時動態；多連結訊息最多 50 個。X 支援貼文；YouTube 支援單條影片和 Shorts。檔案達 49 MiB 會保留在本機，不會傳送。'
         telegram('sendMessage',{'chat_id':chat_id,'text':help_text if command in ('/start','/help') else '請輸入 /help 查看使用說明。'})
     else:
         urls=c.extract_urls(text)
-        if not urls:telegram('sendMessage',{'chat_id':chat_id,'text':'請貼上 Instagram、TikTok、Twitter / X HTTPS 貼文連結'});return
+        if not urls:telegram('sendMessage',{'chat_id':chat_id,'text':'請貼上 Instagram、TikTok、Twitter / X 或 YouTube HTTPS 連結'});return
         if len(urls)>1:
             try:
                 key=c.enqueue_batch(str(u['update_id'])+':batch',chat_id,urls,m.get('message_id'))
@@ -199,11 +199,14 @@ def download(job):
         c.update(job['id'],state='cooldown',retry_at=result['retry_at'])
         reason='每分鐘媒體配額已用完' if result.get('wait_reason')=='quota' else '平台限流'
         status(job,label+' '+reason+'，將於 '+datetime.fromtimestamp(result['retry_at'],timezone.utc).strftime('%H:%M:%S UTC')+' 自動續作');return False
-    if result.get('auth_required') or result.get('failure')=='login_required':
+    if platform!='youtube' and (result.get('auth_required') or result.get('failure')=='login_required'):
         c.update(job['id'],state='paused');status(job,label+' 此工作帳號的 Cookie 需在設定更新');return False
     add_files(job,result['files'])
     reason=tiktok.failure_message(result.get('failure'),job['mode']) if platform=='tiktok' and result['code'] else ''
     if platform=='twitter' and result['code']:reason=twitter.failure_message(result.get('failure'))
+    if platform=='youtube' and result['code']:
+        from .yt_runner import youtube_failure_message
+        reason=youtube_failure_message(result.get('failure'))
     if platform=='twitter' and result.get('no_media'):
         c.update(job['id'],state='completed',delivered=time.time());status(job,'此 '+label+' 貼文沒有圖片或影片');return False
     if result['code'] and not result['files']:
@@ -300,6 +303,9 @@ def process_batch(job):
         reason=''
         if result.get('auth_required'):reason=label+' 此工作帳號的 Cookie 需在設定更新'
         elif result.get('no_media'):reason='此貼文沒有圖片或影片'
+        elif platform=='youtube' and result['code']:
+            from .yt_runner import youtube_failure_message
+            reason=youtube_failure_message(result.get('failure'))
         elif result['code']:
             reason=(tiktok.failure_message(result.get('failure'),item['mode']) if platform=='tiktok' else twitter.failure_message(result.get('failure')) if platform=='twitter' else label+' 擷取失敗；請檢查網址或平台限制')
         elif not result['files']:reason='沒有目前可見的媒體'

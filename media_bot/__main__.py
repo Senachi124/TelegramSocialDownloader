@@ -4,7 +4,7 @@ import logging
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Telegram Instagram, TikTok and X download worker')
+    parser = argparse.ArgumentParser(description='Telegram Instagram, TikTok, X and YouTube download worker')
     parser.add_argument('--check', action='store_true', help='validate runtime inputs without network access')
     args = parser.parse_args()
     from . import config

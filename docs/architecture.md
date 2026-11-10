@@ -1,6 +1,6 @@
 # 使用者流程、背景架構與資料庫
 
-本文對照目前的 [worker.py](../media_bot/worker.py)、[core.py](../media_bot/core.py)、[inbox.py](../media_bot/inbox.py) 與 [instagram_policy.py](../media_bot/instagram_policy.py)，描述實際背景核心行為。平台名稱在資料庫中使用 `instagram`、`tiktok`、`twitter`，其中 `twitter` 即 X。
+本文對照目前的 [worker.py](../media_bot/worker.py)、[core.py](../media_bot/core.py)、[inbox.py](../media_bot/inbox.py) 與 [instagram_policy.py](../media_bot/instagram_policy.py)，描述實際背景核心行為。平台名稱在資料庫中使用 `instagram`、`tiktok`、`twitter` 和 `youtube`，其中 `twitter` 即 X。
 
 ## 1. User flow：從貼上連結到收到媒體
 
@@ -95,6 +95,7 @@ sequenceDiagram
 | --- | --- |
 | Instagram | `gallery_runner` → gallery-dl + `instagram_web_gallery`／`instagram_web_client`；`instagram_policy` 限制 API 請求。 |
 | TikTok 影片貼文 | `gallery_runner` → `yt_runner` → yt-dlp。 |
+| YouTube 影片／Shorts | `core` 將單片網址統一為 watch URL → `gallery_runner` → `yt_runner` → yt-dlp。獨立佇列、媒體配額及冷卻，不讀取 Cookie。 |
 | TikTok 照片／限時動態 | `gallery_runner` → gallery-dl + `tiktok` adapter。 |
 | X 貼文 | `gallery_runner` → `twitter_runner` → twscrape；媒體另由 HTTP 客戶端串流下載。 |
 

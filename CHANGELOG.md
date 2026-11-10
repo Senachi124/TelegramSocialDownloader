@@ -6,6 +6,9 @@
 
 ### Added
 
+- 支援公開 YouTube 影片、Shorts 和 youtu.be 分享連結，可單獨或混合批次下載。YouTube 需要 Deno 供 yt-dlp 使用，建議安裝 FFmpeg；不需 Cookie 或資料庫遷移，沿用 49 MiB 傳送門檻。
+- 新增需求及進度文件，記錄 YouTube 支援範圍和驗證結果。
+
 - 新增完整架構文件：使用者流程、背景處理時序、工作／檔案狀態、兩個 SQLite 資料庫的 ER 圖、欄位字典及參考 SQL，讓開發者可核對實際資料關聯與恢復行為。
 - 新增根目錄 `AGENTS.md` 與本變更紀錄，規定程式、依賴、設定介面、測試及文件修改須在同一 commit 更新 changelog，並定義分類與版本整理方式。
 

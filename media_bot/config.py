@@ -6,9 +6,9 @@ import re
 import stat
 import tempfile
 
-PLATFORMS = ('instagram', 'tiktok', 'twitter')
-LABELS = {'instagram': 'Instagram', 'tiktok': 'TikTok', 'twitter': 'Twitter / X'}
-_FILES = {p: p.upper() + '_COOKIES_FILE' for p in PLATFORMS}
+PLATFORMS = ('instagram', 'tiktok', 'twitter', 'youtube')
+LABELS = {'instagram': 'Instagram', 'tiktok': 'TikTok', 'twitter': 'Twitter / X', 'youtube': 'YouTube'}
+_FILES = {p: p.upper() + '_COOKIES_FILE' for p in PLATFORMS if p != 'youtube'}
 
 
 class ConfigurationError(ValueError):
@@ -69,6 +69,8 @@ def token():
 
 
 def cookies(platform):
+    if platform == 'youtube':
+        return {}
     if platform not in _FILES:
         raise ConfigurationError('Unsupported download platform')
     raw = _read_external(_FILES[platform], optional=True)

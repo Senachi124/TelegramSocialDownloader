@@ -94,9 +94,11 @@ sequenceDiagram
 | 內容類型 | 實際引擎與相關模組 |
 | --- | --- |
 | Instagram | `gallery_runner` → gallery-dl + `instagram_web_gallery`／`instagram_web_client`；`instagram_policy` 限制 API 請求。 |
-| TikTok 影片貼文 | `gallery_runner` → `yt_runner` → yt-dlp。 |
+| TikTok 影片貼文 | `gallery_runner` → `yt_runner` → yt-dlp；優先 HTTPS 完整 H.264 MP4，沒有符合格式才使用原有直接下載備援。 |
 | TikTok 照片／限時動態 | `gallery_runner` → gallery-dl + `tiktok` adapter。 |
 | X 貼文 | `gallery_runner` → `twitter_runner` → twscrape；媒體另由 HTTP 客戶端串流下載。 |
+
+TikTok 的 H.264／`avc1` 偏好優先於解析度，再於符合格式中選擇最佳版本；沒有 H.264 完整影音時，依序選其他 HTTPS MP4、其他 HTTPS 完整影音、HTTP 完整影音。這條路徑不合併、不轉碼、不強制 720p，亦不保證檔案低於 49 MiB。既有下載與傳送檢查點保持原樣，不自動替換已完成檔案。
 
 ## 3. 工作與檔案狀態
 

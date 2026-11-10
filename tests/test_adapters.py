@@ -182,6 +182,65 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result['failure'], 'extractor_error')
         self.assertNotIn('SYNTHETIC_PRIVATE_VALUE', (self.root / 'result.json').read_text())
 
+    def select_tiktok_formats(self, formats):
+        """Exercise the runner and yt-dlp selection, replacing only provider I/O."""
+        from yt_dlp.extractor.tiktok import TikTokIE
+        selected = []
+        def extract(extractor, url):
+            return {'id': '123', 'title': 'synthetic', 'formats': formats}
+        def download(downloader, name, info, subtitle=False, test=False):
+            selected.append(info['format_id'])
+            Path(name).write_bytes(b'synthetic-video')
+            return True, True
+        with patch.object(TikTokIE, '_real_extract', extract), \
+                patch.object(self.yt.YoutubeDL, 'dl', download), \
+                patch.object(self.yt.YoutubeDL, 'urlopen', side_effect=AssertionError('Unexpected network')):
+            result = self.yt.run({'root': str(self.root / 'capture'),
+                                  'url': 'https://www.tiktok.com/@example/video/123', 'cookies': {}})
+        return selected, result
+
+    @staticmethod
+    def tiktok_format(name, codec='h264', height=720, protocol='https', **extra):
+        return {'format_id': name, 'url': f'https://example.test/{name}.mp4',
+                'ext': 'mp4', 'vcodec': codec, 'acodec': 'aac',
+                'height': height, 'width': round(height * 16 / 9),
+                'protocol': protocol, **extra}
+
+    def test_tiktok_prefers_h264_over_hevc_at_same_resolution(self):
+        selected, result = self.select_tiktok_formats([
+            self.tiktok_format('avc', tbr=2800), self.tiktok_format('hevc', codec='h265', tbr=1200)])
+        self.assertEqual(selected, ['avc'])
+        self.assertEqual((result['code'], result['media_attempts']), (0, 1))
+
+    def test_tiktok_selects_best_h264_and_accepts_avc1_alias(self):
+        selected, result = self.select_tiktok_formats([
+            self.tiktok_format('avc-low', height=360),
+            self.tiktok_format('avc-high', codec='avc1.64001f'),
+            self.tiktok_format('hevc-higher', codec='h265', height=1080)])
+        self.assertEqual(selected, ['avc-high'])
+        self.assertEqual(result['code'], 0)
+
+    def test_tiktok_falls_back_to_complete_hevc_without_h264_audio(self):
+        selected, result = self.select_tiktok_formats([
+            self.tiktok_format('silent-avc', acodec='none'),
+            self.tiktok_format('hevc', codec='h265')])
+        self.assertEqual(selected, ['hevc'])
+        self.assertEqual(result['code'], 0)
+
+    def test_tiktok_keeps_http_fallback(self):
+        selected, result = self.select_tiktok_formats([
+            self.tiktok_format('http-hevc', codec='h265', protocol='http',
+                               url='http://example.test/video.mp4')])
+        self.assertEqual(selected, ['http-hevc'])
+        self.assertEqual(result['code'], 0)
+
+    def test_tiktok_rejects_hls_even_when_h264(self):
+        selected, result = self.select_tiktok_formats([
+            self.tiktok_format('hls', protocol='m3u8_native')])
+        self.assertEqual(selected, [])
+        self.assertEqual(result['code'], 1)
+        self.assertEqual(result['media_attempts'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

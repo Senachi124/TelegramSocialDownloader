@@ -9,6 +9,12 @@ from yt_dlp.networking.exceptions import HTTPError
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from . import core as c
 
+# Prefer a complete H.264 MP4 for playback compatibility; no merging or transcoding.
+TIKTOK_FORMAT = (
+    "best[ext=mp4][vcodec~='^(h264|avc1)'][protocol=https]/"
+    'best[ext=mp4][protocol=https]/best[protocol=https]/best[protocol=http]'
+)
+
 class StopCapture(BaseException):pass
 
 def run(payload):
@@ -58,7 +64,7 @@ def run(payload):
             return super().dl(name,info,subtitle,test)
     params={'logger':Logger(),'quiet':True,'noprogress':True,'noplaylist':True,
             'socket_timeout':30,'retries':2,'extractor_retries':2,
-            'format':'best[ext=mp4][protocol=https]/best[protocol=https]/best[protocol=http]',
+            'format':TIKTOK_FORMAT,
             'outtmpl':str(root/'%(id)s_00_.%(ext)s'),'overwrites':False,
             'cachedir':False,'usenetrc':False,'cookiefile':None,
             'impersonate':ImpersonateTarget.from_str('chrome')}

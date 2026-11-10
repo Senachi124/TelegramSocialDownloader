@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-social-downloader"
+version = "0.1.0"
+description = "Standalone Telegram background worker for Instagram, TikTok and X downloads"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[project.scripts]
+telegram-social-downloader = "media_bot.__main__:main"
+
+[tool.setuptools]
+packages = ["media_bot"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}

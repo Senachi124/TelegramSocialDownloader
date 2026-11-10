@@ -54,6 +54,8 @@ Cookie 檔案格式是名稱到字串值的 JSON 物件。Token／Cookie 檔案�
 
 ## 開發驗證
 
+修改前請閱讀 [AGENTS.md](AGENTS.md)。每次程式、依賴、設定介面、測試或文件變更，都必須在同一 commit 更新 [CHANGELOG.md](CHANGELOG.md) 的 `Unreleased` 區段；版本發布時再整理版本與日期。
+
 ```sh
 .venv/bin/python -m unittest discover -s tests -v
 ```
@@ -83,6 +85,8 @@ Cookie 檔案格式是名稱到字串值的 JSON 物件。Token／Cookie 檔案�
 | 檔案 | 內容與用途 |
 | --- | --- |
 | [README.md](README.md) | 功能、安裝方式、環境變數、儲存與錯誤處理規則、測試命令，以及本份逐檔導覽。 |
+| [AGENTS.md](AGENTS.md) | 全 repository 的開發維護規則，包含必須同步更新 changelog 的要求、紀錄分類、版本整理與提交前檢查。 |
+| [CHANGELOG.md](CHANGELOG.md) | 初始版本及尚未發布的功能、行為和文件變更紀錄，說明對使用者或開發者的影響。 |
 | [.gitignore](.gitignore) | Git 忽略規則，涵蓋環境檔、Cookie／token 檔名、資料庫、媒體、暫存、虛擬環境與建置產物。 |
 | [pyproject.toml](pyproject.toml) | 套件名稱與版本、Python 最低版本、setuptools 建置設定、套件範圍，以及 `telegram-social-downloader` 命令入口。 |
 | [requirements.txt](requirements.txt) | 固定版本的 gallery-dl、yt-dlp、twscrape、requests、requests-toolbelt 和 curl-cffi 依賴。 |

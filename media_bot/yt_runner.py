@@ -1,7 +1,9 @@
 """TikTok video capture through yt-dlp; same quota/result contract as gallery."""
 import json
+import os
 from pathlib import Path
 import time
+import uuid
 from email.utils import parsedate_to_datetime
 from requests.cookies import create_cookie
 from yt_dlp import YoutubeDL
@@ -16,6 +18,37 @@ TIKTOK_FORMAT = (
 )
 
 class StopCapture(BaseException):pass
+
+def _prepare_partial(path, info):
+    """Resume only a partial recorded for this format; keep other bytes intact."""
+    part = path.with_name(path.name + '.part')
+    marker = path.with_name(path.name + '.format.json')
+    for candidate in (part, marker):
+        if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+            raise ValueError('Invalid partial state path')
+    # Deliberately exclude URLs, headers and cookies from persistent state.
+    fingerprint = {'version': 1, 'format': {key: info.get(key) for key in (
+        'id', 'format_id', 'vcodec', 'acodec', 'ext', 'width', 'height', 'fps', 'filesize')}}
+    try:
+        previous = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        previous = None
+    if previous == fingerprint:
+        return
+    if part.exists():
+        # Hardlink plus unlink preserves bytes on the same filesystem and never
+        # overwrites another preservation file, even if a name already exists.
+        preserved = part.with_name(part.name + '.preserved-' + uuid.uuid4().hex)
+        os.link(part, preserved, follow_symlinks=False)
+        part.unlink()
+    temporary = marker.with_name(marker.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        with temporary.open('x', encoding='utf-8') as stream:
+            os.chmod(temporary, 0o600)
+            json.dump(fingerprint, stream, sort_keys=True)
+        temporary.replace(marker)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 def run(payload):
     root=Path(payload['root']).resolve();root.mkdir(parents=True,exist_ok=True)
@@ -61,6 +94,7 @@ def run(payload):
                     if c.reserve_media('tiktok',str(path)):result['media_attempts']+=1
                 except c.RateLimited as error:
                     result.update(retry_at=error.until,wait_reason='quota');raise StopCapture()
+                _prepare_partial(path, info)
             return super().dl(name,info,subtitle,test)
     params={'logger':Logger(),'quiet':True,'noprogress':True,'noplaylist':True,
             'socket_timeout':30,'retries':2,'extractor_retries':2,

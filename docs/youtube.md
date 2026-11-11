@@ -33,3 +33,9 @@ python -m unittest discover -s tests -v
 `tests/test_adapters.py` 使用真實 yt-dlp 選擇和 merger 邏輯，模擬平台資料、下載內容與 FFmpeg 執行，驗證完整 H.264 優先、H.264／AAC 備援的 `-c copy`、無 FFmpeg 的降級／拒絕、WebM 備援及 TikTok 續傳。`tests/test_runtime.py` 驗證網址、混合批次、只傳最終檔、影音只計一次配額和獨立 HTTP 429 冷卻。測試不呼叫真實平台或 Telegram API。
 
 PR #1 原有實站下載紀錄與本次離線驗證分開記錄於 [PROGRESS.md](../PROGRESS.md)；本次修正不代表已完成真實 Telegram 傳送或正式服務部署。
+
+## 已知風險 YT-001：分段缺失仍可能回報成功
+
+2026-11-11 review 已以離線 HLS fixture 重現：三個片段中的中間片段回傳 HTTP 404，yt-dlp 預設 `skip_unavailable_fragments=True` 會跳過該片段；runner 仍可能回傳 `code=0`，把只有前後片段的非空檔案交付 Telegram。可能造成跳段、影音異常或播放失敗。此風險針對分段格式，不代表每條影片或每次 404 都會發生。
+
+使用者於 2026-11-11 明確接受將此問題記錄後合併 PR #1 並整合至部署中的 Bot；本次保留現行行為，未將風險標記為已修復。後續建議設定 `skip_unavailable_fragments=False`、限制 fragment retries，並加入缺段不交付及 partial 保留的回歸。原始離線格式測試通過不能證明影片內容完整。

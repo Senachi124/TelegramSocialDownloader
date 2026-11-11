@@ -20,6 +20,8 @@
 
 ### Changed
 
+- 記錄已知風險 YT-001：YouTube 分段下載可能跳過 HTTP 404 片段而回報成功並交付缺段檔案；依使用者決定保留現行行為，修復另行追蹤，詳見 `docs/youtube.md`。
+
 - YouTube 優先下載已有畫面與聲音的 H.264 MP4；沒有時才在 FFmpeg 可用下直接合併 H.264＋AAC（stream copy，不重新壓制），最後備援其他完整 MP4／WebM。新增格式選擇、無 FFmpeg 與合併參數回歸，以及 `docs/youtube.md`；整合 main 的 TikTok H.264 與 partial 安全續傳修正，無資料庫遷移。
 
 - README 加入架構、SQL、維護規則及 changelog 入口與逐檔說明，方便開發者找到對應文件。

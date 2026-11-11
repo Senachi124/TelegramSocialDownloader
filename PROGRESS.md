@@ -19,3 +19,7 @@ YouTube 改動位於 `feat/youtube-support` 分支，基於 `origin/main`。
 - 驗證：Python 3.14、yt-dlp 2026.10.21 下，`python -m unittest discover -s tests -q` 共 94 項通過；包含 6 項新增 YouTube 格式／合併回歸，以及 main 的 TikTok 格式與 HTTP Range 續傳回歸。`pip check`、CLI `--help`、diff whitespace 檢查通過。獨立 Code Reviewer 已檢查 runner 與測試，未發現阻擋問題。
 - 本次只做合成資料／模擬平台及本機 HTTP 測試；沒有真實 YouTube 下載、Telegram 發送或正式部署。上一節的實站下載紀錄屬原 PR 版本，不能當作本次選擇順序的實站驗收。正式服務登記與部署索引不受此次 PR 修改影響。
 - 衝突解決、review 修改、測試和文件放在同一個新增 merge commit，保留原分支歷史；PR 合併另行處理。需要撤回本次修正時應用新的 revert commit，勿覆寫遠端歷史或還原執行中資料。
+
+## 2026-11-11：接受已知風險並合併
+
+使用者要求將 review 發現的分段 404 完整性問題保留在 log，並允許 PR #1 進入 main。已登記 YT-001 至 `docs/youtube.md`／CHANGELOG；未變更下載行為，不宣稱已修復或已完成真實 Telegram 驗收。正式 PrivateMediaBot 的功能整合與部署在獨立 private repository 維護。

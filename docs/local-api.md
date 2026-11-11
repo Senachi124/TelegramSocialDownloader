@@ -48,3 +48,7 @@ location ^~ /files/ {
 ## 設定與遷移
 
 參考根目錄 `.env.example`，所有敏感檔案保持在程式及資料樹外的0600一般檔案。啟動自動新增資料欄位與links表，不改寫現有工作、刪除舊媒體或自動補發。請先停止舊worker並備份控制資料，測試設定和新worker；保留失敗／不明檔案及隊列。未設定新選項時保持雲端傳送及匿名YouTube。
+
+## 可選官方程式編譯
+
+`.github/workflows/build-local-bot-api.yml` 在 Ubuntu 24.04 以四個編譯工作建置固定的官方 Bot API／TDLib revision。工作流程只有 repository read 權限，不讀取 Bot 憑證，也不自動部署。產物 `telegram-bot-api-linux-amd64` 包含 binary 與 `build-manifest.json`，保留三天。使用前核對 workflow 的來源 commit、成功狀態、artifact digest、manifest SHA-256 及目標機器的 shared library 相容性；這不是 upstream 簽署的 release。

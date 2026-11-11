@@ -6,6 +6,7 @@
 
 ### Added
 
+- 新增固定官方來源與 TDLib revision 的 Local Bot API GitHub Actions 編譯檢查，產出 Linux amd64 binary 與來源／SHA-256 manifest，三天後移除 artifact；不包含 Bot 憑證或自動部署。
 - 支援公開 YouTube 影片、Shorts 和 youtu.be，可單獨或混合批次下載；需要 Deno，建議 FFmpeg。原匿名下載方式保留，新增的 Cookie、Local API 與偏好選項見下列條目。
 - 完整架構文件含使用者流程、背景時序、狀態、SQLite ER 圖及參考 SQL；根目錄 `AGENTS.md` 定義每次變更須同步 changelog，README 提供文件與逐檔導覽入口。
 - `/settings` 保存每位使用者的 IG／TikTok 貼文、指定項目／限時動態及 YouTube 畫質／HDR 偏好。新工作原子保存快照，貼連結後直接下載；不可套用的偏好會回報原因。既有 choice 工作仍可完成。

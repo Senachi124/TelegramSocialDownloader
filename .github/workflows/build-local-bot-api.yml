@@ -42,7 +42,7 @@ jobs:
           python3 - <<'PY'
           import hashlib, json, os, pathlib, subprocess
           binary=pathlib.Path('artifact/telegram-bot-api')
-          version=subprocess.check_output([str(binary.resolve()), '--version'], text=True).strip()
+          version=subprocess.check_output([str(binary.resolve()), '--version'], text=True, stderr=subprocess.STDOUT).strip()
           assert '10.4' in version
           result={
               'repository':'https://github.com/tdlib/telegram-bot-api.git',

@@ -49,6 +49,29 @@ class Features(unittest.TestCase):
             w.handle_update({'update_id':9,'message':{'chat':{'id':456,'type':'private'},'from':{'id':456},'text':'https://instagram.com/p/example/'}})
         choice.assert_not_called()
         with self.assertRaises(PermissionError):preferences.save(999,'instagram','content','post_all')
+    def test_platform_selection_controls_follow_link_image_and_tiktok_all_scope(self):
+        sent=[]
+        def send(method,data):sent.append((method,data));return {'message_id':1}
+        def message(text):return {'message':{'chat':{'id':123,'type':'private'},'from':{'id':123},'text':text}}
+        preferences.save(123,'instagram','content','post_images')
+        before=preferences.load(123)
+        preferences.handle(message('/settings instagram 1,3'),send)
+        self.assertEqual(preferences.load(123),before)
+        preferences.show(send,123,'instagram')
+        self.assertIn('?img_index=3',sent[-1][1]['text']);self.assertNotIn('指定序號：',sent[-1][1]['text'])
+        preferences.save(123,'instagram','content','stories_all')
+        preferences.handle(message('/settings instagram 1,3'),send)
+        self.assertEqual(preferences.load(123)['instagram']['indices'],[1,3])
+        self.assertEqual(preferences.load(123)['instagram']['content'],'stories_selected')
+        before=preferences.load(123)
+        preferences.handle(message('/settings tiktok 2'),send)
+        self.assertEqual(preferences.load(123),before)
+        for old,wanted in [('post_selected','post_all'),('stories_selected','stories_all')]:
+            self.assertEqual(preferences.normalize({'tiktok':{'content':old,'indices':[2]}})['tiktok'],{'content':wanted})
+        preferences.show(send,123,'tiktok')
+        choices=[b['callback_data'] for row in sent[-1][1]['reply_markup']['inline_keyboard'] for b in row if ':content:' in b['callback_data']]
+        self.assertEqual(choices,['pref:tiktok:content:post_all','pref:tiktok:content:stories_all'])
+
     def test_batch_notice_is_atomic(self):
         key=c.enqueue_batch('batch',123,['https://instagram.com/stories/example/1/','https://youtu.be/Abc123_X-yZ'],1,preferences=preferences.load(123))
         self.assertIn('第 1 個連結',preferences.notice_text(key))
@@ -82,9 +105,21 @@ class Features(unittest.TestCase):
         with patch.dict(os.environ,MEDIA_BOT_LOCAL_FILE_UPLOADS='1'),patch.object(config,'token',return_value='123:synthetic'),patch.object(w._transport,'session',session,create=True):
             with Path(file['path']).open('rb') as stream:w.telegram('sendDocument',{'chat_id':123},{'document':('file',stream,'application/octet-stream')})
             kwargs=session.post.call_args.kwargs
-            self.assertEqual(kwargs['json']['document'],file['path']);self.assertFalse(kwargs['allow_redirects']);self.assertFalse(session.trust_env)
+            self.assertEqual(kwargs['json']['document'],Path(file['path']).as_uri());self.assertFalse(kwargs['allow_redirects']);self.assertFalse(session.trust_env)
             outside=self.root/'outside';outside.write_text('fixture')
             with outside.open('rb') as stream:self.assertIsNone(w._local_file_payload({}, {'document':('file',stream,'application/octet-stream')}))
+    def test_local_api_file_uri_roundtrips_reserved_and_unicode_filename(self):
+        from urllib.parse import urlsplit,unquote
+        job=self.job();file=self.file(job)
+        path=Path(file['path']).with_name('space #百分%.bin')
+        Path(file['path']).rename(path)
+        with patch.dict(os.environ,MEDIA_BOT_LOCAL_FILE_UPLOADS='1'),path.open('rb') as stream:
+            payload=w._local_file_payload({}, {'document':(path.name,stream,'application/octet-stream')})
+        uri=urlsplit(payload['document'])
+        self.assertEqual(uri.scheme,'file');self.assertEqual(uri.netloc,'')
+        self.assertEqual(uri.query,'');self.assertEqual(uri.fragment,'')
+        self.assertEqual(unquote(uri.path),str(path))
+
     def test_capability_server_ranges_expiry_revocation_and_no_plain_tokens(self):
         job=self.job();file=self.file(job);Path(file['path']).write_bytes(b'abcdefgh')
         url=links.create(file['id']);token=url.rsplit('/',1)[-1]

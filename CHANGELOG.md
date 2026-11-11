@@ -9,7 +9,7 @@
 - 新增固定官方來源與 TDLib revision 的 Local Bot API GitHub Actions 編譯檢查，產出 Linux amd64 binary 與來源／SHA-256 manifest，三天後移除 artifact；不包含 Bot 憑證或自動部署。
 - 支援公開 YouTube 影片、Shorts 和 youtu.be，可單獨或混合批次下載；需要 Deno，建議 FFmpeg。原匿名下載方式保留，新增的 Cookie、Local API 與偏好選項見下列條目。
 - 完整架構文件含使用者流程、背景時序、狀態、SQLite ER 圖及參考 SQL；根目錄 `AGENTS.md` 定義每次變更須同步 changelog，README 提供文件與逐檔導覽入口。
-- `/settings` 保存每位使用者的 IG／TikTok 貼文、指定項目／限時動態及 YouTube 畫質／HDR 偏好。新工作原子保存快照，貼連結後直接下載；不可套用的偏好會回報原因。既有 choice 工作仍可完成。
+- `/settings` 保存每位使用者的 IG連結圖片／限時動態及TikTok全部貼文／全部限時動態及 YouTube 畫質／HDR 偏好。新工作原子保存快照，貼連結後直接下載；不可套用的偏好會回報原因。既有 choice 工作仍可完成。
 - 可選 loopback Local Bot API、最多500 MB直接傳送、較大檔案提供2小時URL。可選 loopback下載服務使用256-bit capability、資料庫只存digest，支援GET／HEAD／單一Range；操作者須配置HTTPS反向代理。未設定URL服務時保留超限檔案並標記部分完成，雲端預設仍有49 MiB安全門檻。
 - 可選外部0600 Netscape YouTube Cookie檔；未設定時維持匿名，僅載入有效YouTube域Cookie。不加入私人帳號池、管理介面或主機設定。
 
@@ -22,6 +22,9 @@
 - YT-001仍保留：YouTube分段下載可能跳過404片段而交付缺段檔案；本次Instagram嚴格DASH處理不代表此YouTube風險已修復。
 
 ### Fixed
+
+- Local Bot API 本機檔案傳送改用正確的 `file://` URI；原始絕對路徑會被官方服務誤當遠端檔案 ID 而拒絕。保留既有權限／inode檢查，檔名中的空白、百分號和非ASCII文字正確編碼。
+- IG「指定連結中的圖片」改從每條連結的 `img_index` 讀取原始輪播位置，不採用全域圖片序號；缺少或格式無效時下載全部內容；序號不可對應圖片時備援可確認的圖片或原內容並說明。IG手動序號只保留於指定限時動態。TikTok移除指定項目／序號選項，舊偏好轉為對應的全部貼文／全部限時動態。更新設定、help及回歸測試。
 
 - 官方編譯產物檢查同時讀取 stdout／stderr 的版本輸出，支援 upstream `LOG(PLAIN)` 輸出方式。
 - TikTok 續傳格式紀錄不含網址或憑證；格式變更或缺少紀錄時保留舊 partial，避免 H.264／HEVC 混接；格式相同仍可 Range 續傳。保留配額阻擋、完整檔與 partial／紀錄符號連結拒絕。既有 H.264／avc1、完整影音、HTTP 備援及拒絕 HLS 回歸，按新版最高畫質優先規則更新；另涵蓋合併、大小界線、URL 存取／到期及不明收據不重送。

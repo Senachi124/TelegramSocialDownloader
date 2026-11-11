@@ -26,6 +26,7 @@ def main():
     root=Path(p['root']);root.mkdir(parents=True,exist_ok=True)
     result={'code':1,'retry_at':0,'auth_required':False,'files':[],
             'failure':'','http_errors':[],'cookie_used':bool(p.get('cookies')),'started':time.time(),'requests':0,'media_attempts':0,'wait_reason':''}
+    preferences=media_preferences.effective(preferences,p['url'],p.get('mode','post'),platform=platform,result=result)
     options={'extractor':{'base-directory':str(root),'directory':[],
         'filename':'{media_id}.{extension}' if platform=='instagram' else '{id}_{num:02}_{file_id}.{extension}',
         'sleep':0,'sleep-request':0,

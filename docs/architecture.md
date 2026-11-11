@@ -345,3 +345,5 @@ MEDIA_BOT_DATA/
 `limits.py` 統一500,000,000-byte直傳／2,000,000,000-byte下載上限。`links.py` 可選啟動loopback服務；`links(token,file,expires)` 的token是SHA-256而非原始capability，file外鍵連接files，expires為Unix秒。`files.link_retention_until` 預設0代表原有24小時直接交付；新URL檔記錄最後到期時間，只有已確認且完整交付的檔案可到期刪除。API及URL操作流程見 [部署說明](local-api.md)，DDL見 [state-schema.sql](state-schema.sql)。
 
 Telegram媒體使用有限response/read timeout及全域大型傳送semaphore；結果不明的收據不自動重送。GET／HEAD／Range存取會檢查capability、2小時到期、使用者允許名單及媒體路徑；網址服務未設定時超限檔保留本機，不能當成已交付。
+
+Instagram「指定連結中的圖片」以每條URL的 `img_index` 取得原輪播位置，不使用設定中的全域圖片序號。手動序號只用於IG限時動態；TikTok只有全部貼文／全部限時動態，舊selected偏好讀取時轉為相應all模式。

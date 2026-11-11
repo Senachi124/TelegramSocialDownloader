@@ -1,4 +1,37 @@
 """Download preferences with explicit fallback to reliable available media."""
+import re
+from urllib.parse import parse_qs,urlsplit
+
+
+def effective(preferences,url,mode,*,platform='instagram',result=None):
+    """Instagram's selected image belongs to this URL, never saved story indices."""
+    selected=dict(preferences or {})
+    if platform=='tiktok':
+        selected.pop('indices',None)
+        if selected.get('content') in ('post_selected','stories_selected'):
+            selected['content']=selected['content'].replace('_selected','_all')
+        return selected
+    if platform!='instagram' or selected.get('content')!='post_images':return selected
+    selected.pop('indices',None)
+    try:
+        parsed=urlsplit(url)
+        values=parse_qs(parsed.query,keep_blank_values=True).get('img_index',[])
+        valid=(mode=='post' and parsed.scheme=='https'
+               and parsed.hostname in ('instagram.com','www.instagram.com')
+               and not parsed.username and not parsed.password and parsed.port in (None,443)
+               and re.fullmatch(r'/(?:p|reels?|tv)/[A-Za-z0-9_-]+/?',parsed.path)
+               and len(values)==1 and re.fullmatch(r'[1-9][0-9]{0,3}',values[0])
+               and int(values[0])<=1000)
+    except (ValueError,TypeError):valid=False
+    if valid:
+        selected['indices']=[int(values[0])]
+    else:
+        selected['content']='post_all'
+        if result is not None:
+            record_notice(result,'連結沒有可套用的圖片序號 img_index，已下載此連結實際可識別的全部內容。')
+    return selected
+
+
 def quality(preferences):
     value=(preferences or {}).get('quality','best')
     return None if value=='best' else int(value) if str(value) in ('1080','720','480') else None

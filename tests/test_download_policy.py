@@ -67,6 +67,28 @@ class PreferenceTests(unittest.TestCase):
         self.assertTrue(media_preferences.include({'content':'post_images','indices':[2]},3,
             has_images=True,image_positions=[1,3],result=result))
 
+    def test_url_image_index_overrides_saved_story_indices_without_mutation(self):
+        saved={'content':'post_images','indices':[1,5],'prefer_hdr':True}
+        url='https://www.instagram.com/p/ExamplePost/?img_index=3'
+        chosen=media_preferences.effective(saved,url,'post')
+        self.assertEqual(chosen['indices'],[3]);self.assertEqual(saved['indices'],[1,5])
+        for suffix in ('','?img_index=','?img_index=0','?img_index=-1','?img_index=1001',
+                       '?img_index=3&img_index=1','?img_index=wrong','?img_index=３'):
+            result={}
+            chosen=media_preferences.effective(saved,url.split('?')[0]+suffix,'post',result=result)
+            self.assertEqual(chosen['content'],'post_all');self.assertNotIn('indices',chosen)
+            self.assertIn('preference_notice',result)
+        result={}
+        chosen=media_preferences.effective(saved,url,'stories',result=result)
+        self.assertEqual(chosen['content'],'post_all');self.assertIn('preference_notice',result)
+
+    def test_legacy_tiktok_selection_is_normalized_to_all(self):
+        for content,wanted in [('post_selected','post_all'),('stories_selected','stories_all')]:
+            chosen=media_preferences.effective({'content':content,'indices':[2]},
+                'https://www.tiktok.com/@example/photo/123','post',platform='tiktok')
+            self.assertEqual(chosen['content'],wanted);self.assertNotIn('indices',chosen)
+            self.assertTrue(all(media_preferences.include(chosen,n,total=3) for n in (1,2,3)))
+
     def test_numeric_quality_uses_nearest_available_fallback(self):
         from yt_dlp import YoutubeDL
         def fmt(height):return dict(format_id=str(height),url=f'https://example.test/{height}.mp4',
@@ -119,6 +141,38 @@ class DownloadCeilings(unittest.TestCase):
         patcher=patch.object(c,'DATA',self.root);patcher.start();self.addCleanup(patcher.stop)
         cap=patch.object(download_size.limits,'MAX_DOWNLOAD_BYTES',8);cap.start();self.addCleanup(cap.stop)
         c.initialize()
+
+    def test_gallery_uses_per_url_image_and_falls_back_to_actual_content(self):
+        from gallery_dl import job
+        from media_bot import instagram
+        base='https://www.instagram.com/p/ExamplePost/'
+        for index,(url,mode,wanted,notice,content) in enumerate([
+                (base+'?img_index=3','post',[3],False,'post_images'),
+                (base,'post',[1,2,3],True,'post_images'),
+                (base+'?img_index=0','post',[1,2,3],True,'post_images'),
+                (base+'?img_index=2','post',[1,3],True,'post_images'),
+                (base+'?img_index=9','post',[1,3],True,'post_images'),
+                (base+'?img_index=3','stories',[1,2,3],True,'post_images'),
+                (base+'?img_index=3','post',[1,2,3],False,'post_all')]):
+            captured=[];root=self.root/str(index)
+            runner=Mock();runner.pathfmt.realpath=str(root/'fixture.jpg')
+            def original(instance,url,data):captured.append(data['num'])
+            def run():
+                for n in (1,2,3):
+                    data={'num':n,'count':3,'extension':'mp4' if n==2 else 'jpg',
+                          '_preference_has_images':True,'_preference_image_indices':[1,3]}
+                    job.DownloadJob.handle_url(runner,'https://cdn.cdninstagram.com/fixture',data)
+                return 0
+            payload=dict(platform='instagram',root=str(root),url=url,mode=mode,cookies={},
+                         preferences={'content':content,'indices':[1]})
+            with patch.object(job.DownloadJob,'handle_url',side_effect=original), \
+                    patch.object(job.DownloadJob,'run',side_effect=run), \
+                    patch.object(instagram,'install',return_value=lambda:None), \
+                    patch.object(instagram,'target',return_value=base), \
+                    patch('sys.stdin',io.StringIO(json.dumps(payload))):gallery_runner.main()
+            self.assertEqual(captured,wanted)
+            result=json.loads((root/'result.json').read_text())
+            self.assertEqual(bool(result.get('preference_notice')),notice)
 
     def test_header_range_total_and_exact_boundary(self):
         self.assertEqual(download_size.declared({'Content-Length':'8'}),8)

@@ -8,13 +8,13 @@ from . import config,core as c
 
 DEFAULTS={
     'instagram':{'content':'post_all','indices':[1],'prefer_hdr':True},
-    'tiktok':{'content':'post_all','indices':[1]},
+    'tiktok':{'content':'post_all'},
     'youtube':{'quality':'best','prefer_hdr':True},
 }
 LABELS={'instagram':'Instagram','tiktok':'TikTok','youtube':'YouTube'}
 CONTENT={
-    'instagram':{'post_all':'貼文全部內容','post_images':'指定圖片','stories_all':'作者全部限時動態','stories_selected':'指定限時動態'},
-    'tiktok':{'post_all':'連結指定的貼文內容','post_selected':'指定圖片／項目','stories_all':'作者全部限時動態','stories_selected':'指定限時動態'},
+    'instagram':{'post_all':'貼文全部內容','post_images':'指定連結中的圖片','stories_all':'作者全部限時動態','stories_selected':'指定限時動態'},
+    'tiktok':{'post_all':'貼文全部內容','stories_all':'作者全部限時動態'},
 }
 QUALITY={'best':'最高畫質','1080':'優先 1080p 以下','720':'優先 720p 以下','480':'優先 480p 以下'}
 
@@ -25,7 +25,9 @@ def normalize(value):
     for platform,fields in result.items():
         saved=value.get(platform,{})
         if not isinstance(saved,dict):continue
-        if saved.get('content') in CONTENT.get(platform,{}):fields['content']=saved['content']
+        content=saved.get('content')
+        if platform=='tiktok':content={'post_selected':'post_all','stories_selected':'stories_all'}.get(content,content)
+        if content in CONTENT.get(platform,{}):fields['content']=content
         if platform=='youtube' and saved.get('quality') in QUALITY:fields['quality']=saved['quality']
         if 'prefer_hdr' in fields and type(saved.get('prefer_hdr')) is bool:fields['prefer_hdr']=saved['prefer_hdr']
         indices=saved.get('indices')
@@ -97,10 +99,16 @@ def show(send,actor,platform=''):
         if platform not in DEFAULTS:raise ValueError('無效平台')
         p=prefs[platform];text.append('<b>'+LABELS[platform]+'</b>')
         if platform in CONTENT:
-            text.append('目前：'+CONTENT[platform][p['content']]+'\n指定序號：'+','.join(map(str,p['indices'])))
+            text.append('目前：'+CONTENT[platform][p['content']])
+            if platform=='instagram' and p['content'].startswith('stories_'):
+                text.append('限時動態序號：'+','.join(map(str,p['indices'])))
             for key,label in CONTENT[platform].items():
                 rows.append([_button(('✓ ' if p['content']==key else '')+label,platform+':content:'+key)])
-            text.append('指定序號從 1 開始；貼文按原始輪播位置，限時動態按擷取順序。例：<code>/settings '+platform+' 1,3</code>。設定時一次填好，貼連結後不再追問。')
+            if platform=='instagram':
+                text.append('「指定連結中的圖片」讀取每條貼文連結的 <code>?img_index=3</code>，代表原始輪播第 3 項；不使用全域圖片序號。缺少或格式無效時下載全部內容；超出範圍或該位置不是圖片時改下載可確認的圖片，沒有圖片則保留可確認的原內容並說明。')
+                text.append('只有限時動態使用預設序號，按擷取順序從 1 開始。先選擇限時動態模式，再輸入 <code>/settings instagram 1,3</code> 指定第 1、3 則。')
+            else:
+                text.append('TikTok 只選貼文全部內容或作者全部限時動態，不提供指定項目或序號。')
         else:
             text.append('目前：'+QUALITY[p['quality']])
             for key,label in QUALITY.items():rows.append([_button(('✓ ' if p['quality']==key else '')+label,platform+':quality:'+key)])
@@ -140,14 +148,20 @@ def handle(update,send):
         elif len(parts)==2:show(send,actor,{'ig':'instagram','yt':'youtube'}.get(parts[1],parts[1]))
         elif len(parts)==3:
             platform={'ig':'instagram'}.get(parts[1],parts[1]);raw=parts[2].replace('，',',')
-            if platform not in CONTENT or not re.fullmatch(r'[0-9]+(?:,[0-9]+){0,49}',raw):raise ValueError('請輸入例如 /settings instagram 1,3')
+            if platform not in CONTENT or not re.fullmatch(r'[0-9]+(?:,[0-9]+){0,49}',raw):raise ValueError('無效序號')
+            if platform=='tiktok':
+                send('sendMessage',{'chat_id':actor,'text':'TikTok 不提供指定項目或序號。請在 /settings tiktok 選擇貼文全部內容或作者全部限時動態。'})
+                return True
+            current=load(actor)[platform]['content']
+            if platform=='instagram' and not current.startswith('stories_'):
+                send('sendMessage',{'chat_id':actor,'text':'Instagram 指定圖片使用貼文連結中的 ?img_index=3，不設定全域圖片序號。/settings instagram 1,3 只用於限時動態；請先在 /settings instagram 選擇限時動態模式。'})
+                return True
             indices=list(dict.fromkeys(map(int,raw.split(','))))
             save(actor,platform,'indices',indices)
-            current=load(actor)[platform]['content']
             if current.endswith('_all'):
-                save(actor,platform,'content','stories_selected' if current=='stories_all' else 'post_images' if platform=='instagram' else 'post_selected')
+                save(actor,platform,'content','stories_selected')
             show(send,actor,platform)
-        else:raise ValueError('請輸入 /settings，或 /settings instagram 1,3 指定序號')
+        else:raise ValueError('請輸入 /settings')
     except (ValueError,PermissionError):
-        send('sendMessage',{'chat_id':actor,'text':'設定無效或無權操作。請輸入 /settings；指定序號例如 /settings instagram 1,3（每個序號 1–1000，最多 50 個）。'})
+        send('sendMessage',{'chat_id':actor,'text':'設定無效或無權操作。請輸入 /settings；只有 Instagram 已選擇的限時動態模式可指定序號（每個序號 1–1000，最多 50 個）。Instagram 圖片從連結的 ?img_index=3 指定。'})
     return True

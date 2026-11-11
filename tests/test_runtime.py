@@ -50,7 +50,7 @@ class RuntimeTests(unittest.TestCase):
     def test_schema_contains_only_download_tables(self):
         with c.db() as db:
             names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertEqual(names, {'settings', 'jobs', 'files', 'batch_requests', 'batch_items', 'telegram_inbox', 'media_budget'})
+        self.assertEqual(names, {'settings', 'jobs', 'files', 'batch_requests', 'batch_items', 'telegram_inbox', 'media_budget', 'links'})
 
     def test_supported_routes(self):
         for url, expected in [('https://instagram.com/p/Abc/', ('instagram', 'choice')),

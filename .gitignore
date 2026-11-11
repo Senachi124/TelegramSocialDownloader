@@ -22,3 +22,8 @@ dist/
 *.egg-info/
 .pytest_cache/
 .test-work/
+
+# Portable parser and synthetic tests are source, not credentials.
+!media_bot/youtube_cookies.py
+!tests/test_youtube_cookies.py
+!/.env.example

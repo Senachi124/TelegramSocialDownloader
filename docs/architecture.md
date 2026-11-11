@@ -16,10 +16,10 @@ flowchart TD
     D -->|2 至 50| F[建立批次工作；按原順序處理]
     D -->|1| G[驗證並解析連結]
     G -->|不支援或解析失敗| J[回覆錯誤]
-    G -->|IG 或 TikTok 貼文| K{選擇內容}
+    G -->|IG 或 TikTok 貼文| K{使用設定快照}
     K -->|此貼文| Q[排隊下載]
     K -->|作者限時動態| Q
-    K -->|24 小時未選擇| X[工作逾時取消]
+    K -->|舊 choice 工作逾時| X[工作逾時取消]
     G -->|限時動態或 X 單篇貼文| Q
     F --> Q
     Q --> R{下載結果}
@@ -28,8 +28,8 @@ flowchart TD
     R -->|登入或下載問題| T[顯示狀態；保留工作與已有檔案]
     R -->|有可傳送媒體| U{單檔大小}
     R -->|已確認沒有媒體| N[回覆沒有可見媒體]
-    U -->|達 49 MiB| V[保留本機檔案，標記部分完成]
-    U -->|小於 49 MiB| W[傳送相簿、影片、圖片或文件]
+    U -->|超出介面上限| V[設定URL則傳2小時連結，否則保留並標記部分完成]
+    U -->|Local最多500MB或雲端小於49MiB| W[傳送相簿、影片、圖片或文件]
     W --> Y{Telegram 結果}
     Y -->|確認成功| DONE[保存逐檔收據，回報結果]
     Y -->|429 明確拒絕| WAIT[等待後重試傳送]
@@ -40,7 +40,7 @@ flowchart TD
 
 圖中下載結果是使用者視角的摘要，單筆與批次的精確差異如下：
 
-- **單筆 IG／TikTok 貼文**提供「此貼文／作者限時動態」選擇；分享短連結先解析，再依最終網址決定是否詢問。
+- **單筆 IG／TikTok 貼文**使用 `/settings` 保存的每位使用者設定，工作建立時保存快照；分享連結解析後套用同一快照，無法套用時記錄備援原因。舊 choice 工作仍可完成。
 - **批次**的貼文連結直接下載貼文，限時動態連結保留限時動態模式；不逐項詢問。重複連結保留為不同項目，單項失敗可繼續後面的連結。
 - **X**只接受單篇貼文。個人頁及搜尋頁會被拒絕。
 - **空結果**不是一律成功：單筆確認無媒體可完成；批次項目的無媒體結果記為 `failed`，父工作最後可能是 `partial`。
@@ -67,10 +67,10 @@ sequenceDiagram
     P->>DB: 同一 transaction 寫 inbox 與新 offset
     I->>DB: 按對話順序認領 update
     I->>DB: 建立 job 或 batch_items
-    I->>T: 回覆排隊狀態或選擇按鈕
+    I->>T: 保存設定快照並回覆排隊狀態
     I->>DB: inbox done，清空 payload
     W->>DB: 選取到期的 queued/running/cooldown 工作
-    W->>R: stdin 傳入工作與執行時 Cookie
+    W->>R: stdin 傳入工作、偏好與執行時 Cookie
     R->>S: 擷取 metadata 與媒體
     R->>DB: 媒體配額與平台 cooldown
     R->>FS: 媒體、部分下載、result.json
@@ -94,12 +94,12 @@ sequenceDiagram
 | 內容類型 | 實際引擎與相關模組 |
 | --- | --- |
 | Instagram | `gallery_runner` → gallery-dl + `instagram_web_gallery`／`instagram_web_client`；`instagram_policy` 限制 API 請求。 |
-| TikTok 影片貼文 | `gallery_runner` → `yt_runner` → yt-dlp；優先 HTTPS 完整 H.264 MP4，沒有符合格式才使用原有直接下載備援。 |
-| YouTube 影片／Shorts | `core` 將單片網址統一為 watch URL → `gallery_runner` → `yt_runner` → yt-dlp。優先完整 H.264 MP4，其次在有 FFmpeg 時直接合併 H.264＋AAC，再備援完整 MP4／WebM；不重新編碼。獨立佇列、媒體配額及冷卻，不讀取 Cookie。 |
+| TikTok 影片貼文 | `gallery_runner` → `yt_runner` → yt-dlp；最高畫質完整 HTTPS 影音，H.264僅同畫質優先；沒有時備援HTTP。 |
+| YouTube 影片／Shorts | `core` 將單片網址統一為 watch URL → `gallery_runner` → `yt_runner` → yt-dlp。依快照選HDR／畫質；有FFmpeg可合併最佳影音，不重新編碼。獨立佇列、配額與冷卻，預設匿名，可選外部YouTube域Cookie。 |
 | TikTok 照片／限時動態 | `gallery_runner` → gallery-dl + `tiktok` adapter。 |
 | X 貼文 | `gallery_runner` → `twitter_runner` → twscrape；媒體另由 HTTP 客戶端串流下載。 |
 
-TikTok 的 H.264／`avc1` 偏好優先於解析度，再於符合格式中選擇最佳版本；沒有 H.264 完整影音時，依序選其他 HTTPS MP4、其他 HTTPS 完整影音、HTTP 完整影音。這條路徑不合併、不轉碼、不強制 720p，亦不保證檔案低於 49 MiB。既有下載與傳送檢查點保持原樣，不自動替換已完成檔案。
+TikTok完整影音按畫質優先，H.264同畫質優先；不合併、不轉碼。所有平台套用單一媒體2000 MB下載限制；分離影音合計但不重算合併副本。
 
 進入 TikTok 媒體下載前，runner 先取得配額，再核對輸出旁的 `.format.json`（影片／格式 ID、編碼、容器、尺寸、幀率及大小；不含 URL／Cookie）。紀錄相符才使用 HTTP Range 續傳；紀錄缺失、損壞或不同時，將原 `.part` 保留到同目錄唯一的 `.part.preserved-*` 名稱，原子更新格式紀錄後從頭下載。保留檔不列入傳送或已完成媒體清理；已完成檔直接沿用，配額阻擋時不修改 partial／marker。符號連結或非一般檔案的 partial／marker 會拒絕處理。
 
@@ -111,12 +111,12 @@ stateDiagram-v2
     [*] --> queued: 其他連結或批次
     choice --> queued: 使用者選擇
     choice --> cancelled: 選擇逾時
-    queued --> choice: 短連結解析成需要選擇的貼文
+    queued --> choice: 僅舊工作需要選擇
     queued --> running: 開始下載
     queued --> cooldown: 解析分享連結時遇到限流
     running --> cooldown: 平台限流或媒體配額
     cooldown --> running: 到期續作
-    cooldown --> choice: 單筆短連結到期解析後需要選擇
+    cooldown --> choice: 舊工作仍需選擇
     running --> queued: 批次交接下一項或準備結算
     running --> paused: 必要登入資料缺少或部分可恢復錯誤
     running --> failed: 工作無法完成
@@ -130,7 +130,7 @@ stateDiagram-v2
     running --> cancelled: 取消旗標或使用權限撤回
 ```
 
-此圖呈現主要路徑。取消旗標／權限撤回也能影響其他 active 狀態；本核心的 Telegram 指令只提供 `/start`、`/help` 及下載選擇。`paused`、`partial`、`failed` 不會被平台迴圈自動重新挑選；程序重啟會恢復可執行狀態，並將曾留下 `uncertain` 檔案的工作設為 `partial`。
+此圖呈現主要路徑。取消旗標／權限撤回也能影響其他 active 狀態；本核心的 Telegram 指令提供 `/start`、`/help`、`/settings`，並相容舊下載選擇。`paused`、`partial`、`failed` 不會被平台迴圈自動重新挑選；程序重啟會恢復可執行狀態，並將曾留下 `uncertain` 檔案的工作設為 `partial`。
 
 ```mermaid
 stateDiagram-v2
@@ -139,8 +139,8 @@ stateDiagram-v2
     uncertain --> sent: 收到有效 message_id 並保存
     uncertain --> pending: Telegram 明確拒絕
     uncertain --> uncertain: 逾時或缺少收據，保留待確認
-    uncertain --> too_large: 檔案達 49 MiB，不發送
-    sent --> expired: 父工作 completed 且超過 24 小時
+    uncertain --> too_large: 超出介面上限且未設定URL，不發送
+    sent --> expired: 父工作 completed 且達連結2小時或直接交付24小時期限
 ```
 
 `uncertain` 同時是發送前的防重送 checkpoint 和傳送結果不明時保留的狀態，不能單憑它判斷對方已收到或未收到。SQLite transaction 與 Telegram 網路傳送不能一起原子提交，因此這個設計**不保證 exactly-once delivery**；它以避免自動重複傳送為優先。
@@ -150,6 +150,7 @@ stateDiagram-v2
 ```mermaid
 erDiagram
     jobs ||--o{ files : contains
+    files ||--o{ links : grants
     jobs ||--o| batch_requests : has
     jobs ||--o{ batch_items : contains
     jobs {
@@ -166,6 +167,7 @@ erDiagram
         REAL created
         REAL delivered
         INTEGER cancel
+        TEXT preferences
     }
     files {
         INTEGER id PK
@@ -175,6 +177,12 @@ erDiagram
         INTEGER size
         TEXT state
         TEXT telegram_id
+        REAL link_retention_until
+    }
+    links {
+        TEXT token PK
+        INTEGER file FK
+        REAL expires
     }
     batch_requests {
         TEXT job PK,FK
@@ -211,9 +219,9 @@ erDiagram
     }
 ```
 
-ER 圖顯示應用使用的關聯；精確 nullable、default、UNIQUE 與 FK 定義以 [state-schema.sql](state-schema.sql) 為準。只有三條 `job → jobs.id` 關聯是真正資料庫外鍵。`telegram_inbox` 與 `jobs` 透過程式產生的 `update_key` 關聯，**沒有 FK**；`chat` 是 Telegram ID，沒有本機 users 表。`settings`、`media_budget` 亦沒有指向 jobs 的外鍵。
+ER 圖顯示應用使用的關聯；精確 nullable、default、UNIQUE 與 FK 定義以 [state-schema.sql](state-schema.sql) 為準。三條 `job → jobs.id` 及 `links.file → files.id` 為資料庫外鍵。`telegram_inbox` 與 `jobs` 透過程式產生的 `update_key` 關聯，**沒有 FK**；`chat` 是 Telegram ID，沒有本機 users 表。`settings`、`media_budget` 亦沒有指向 jobs 的外鍵。
 
-YouTube 格式優先順序、stream copy 與驗證方式見 [YouTube 下載說明](youtube.md)。新增 `youtube` 平台值沿用現有 TEXT 欄位，無資料庫遷移。
+YouTube 格式優先順序、stream copy 與驗證方式見 [YouTube 下載說明](youtube.md)。`youtube` 平台值沿用現有TEXT；本次設定／URL功能會新增欄位與links表。
 
 ### jobs：每次下載請求的父工作
 
@@ -326,6 +334,16 @@ MEDIA_BOT_DATA/
 - 狀態字串及平台／模式值由程式維持，主 DB 沒有 ENUM／CHECK 約束；精確 nullable 和 defaults 保留在 DDL，不推測成額外約束。
 - Token／Cookie 由外部受限檔案載入，沒有資料庫憑證欄位。媒體內容存在檔案系統，沒有存進 SQLite BLOB。
 - 至少保留 5 GiB 可用空間，媒體暫存達 3 GiB 時拒絕新增下載。單筆空間／執行錯誤可能成為 `failed`；批次對部分儲存問題設為 `paused`。這兩種狀態不會自動被選取。
-- 清理只刪除 `files.state=sent`、父工作 `completed` 且 `delivered` 超過 24 小時的媒體，每輪最多 16 個。`partial`、`uncertain`、`too_large` 媒體保留；jobs／files metadata 沒有同時刪除。
+- 清理只刪除 `files.state=sent`、父工作 `completed` 且連結保留期限已到或直接交付超過24小時的媒體，每輪最多 16 個。`partial`、`uncertain`、`too_large` 媒體保留；jobs／files metadata 沒有同時刪除。
 - X 的 `.receipt.json` 保存媒體大小與 SHA-256，用來驗證下載檔案；SQLite 的 `telegram_id` 則證明 Telegram 回覆成功。兩種收據證明不同階段。
 - 本文件及 SQL 是從程式整理的開發參考；SQL 可在全新隔離 DB 檢查結構，日常啟動仍交由程式初始化，不應當作現有資料的重設或 migration 指令。
+
+## 設定快照、Local API與可選下載服務
+
+`preferences.py` 只允許當前私人對話使用者修改自己的設定；`jobs.preferences` 為不可變JSON快照。`settings.download_preferences:<chat>` 保存未來工作偏好；`preference_notice:<job>` 保存無法套用偏好的原因。舊資料表由startup新增欄位，不改寫舊工作。
+
+`limits.py` 統一500,000,000-byte直傳／2,000,000,000-byte下載上限。`links.py` 可選啟動loopback服務；`links(token,file,expires)` 的token是SHA-256而非原始capability，file外鍵連接files，expires為Unix秒。`files.link_retention_until` 預設0代表原有24小時直接交付；新URL檔記錄最後到期時間，只有已確認且完整交付的檔案可到期刪除。API及URL操作流程見 [部署說明](local-api.md)，DDL見 [state-schema.sql](state-schema.sql)。
+
+Telegram媒體使用有限response/read timeout及全域大型傳送semaphore；結果不明的收據不自動重送。GET／HEAD／Range存取會檢查capability、2小時到期、使用者允許名單及媒體路徑；網址服務未設定時超限檔保留本機，不能當成已交付。
+
+Instagram「指定連結中的圖片」以每條URL的 `img_index` 取得原輪播位置，不使用設定中的全域圖片序號。IG限時動態一律下載全部可存取內容，不提供手動序號；舊stories_selected偏好讀取時轉為stories_all。TikTok只有全部貼文／全部限時動態，舊selected偏好讀取時轉為相應all模式。

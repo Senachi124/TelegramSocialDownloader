@@ -4,27 +4,30 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- TikTok 續傳加入不含媒體網址或憑證的格式紀錄，避免切換 H.264 後沿用舊 HEVC `.part` 而混合兩種格式的位元組。格式不同或缺少紀錄時保留舊 partial 並重新下載；同格式保留 Range 續傳，配額阻擋與既有完整檔保持不變。新增本機 HTTP Range 實測回歸及 partial／紀錄符號連結拒絕測試。
-- TikTok 影片改為優先選已有畫面與聲音的 HTTPS H.264 MP4（含 `avc1` 編碼名稱），降低直接傳送 HEVC 影片造成的裝置播放相容性風險；保留原有直接下載備援，不轉碼、不設定解析度上限、不替換既有完成檔。H.264 檔案可能較大，仍套用 49 MiB 傳送門檻。
-- 新增使用真實 yt-dlp 選擇流程的離線回歸，涵蓋 H.264／HEVC 優先順序、`avc1` 與最佳 H.264 選擇、完整影音要求、HTTP 備援及拒絕 HLS。
-
 ### Added
 
-- 支援公開 YouTube 影片、Shorts 和 youtu.be 分享連結，可單獨或混合批次下載。YouTube 需要 Deno 供 yt-dlp 使用，建議安裝 FFmpeg；不需 Cookie 或資料庫遷移，沿用 49 MiB 傳送門檻。
-- 新增需求及進度文件，記錄 YouTube 支援範圍和驗證結果。
-
-- 新增完整架構文件：使用者流程、背景處理時序、工作／檔案狀態、兩個 SQLite 資料庫的 ER 圖、欄位字典及參考 SQL，讓開發者可核對實際資料關聯與恢復行為。
-- 新增根目錄 `AGENTS.md` 與本變更紀錄，規定程式、依賴、設定介面、測試及文件修改須在同一 commit 更新 changelog，並定義分類與版本整理方式。
+- 新增固定官方來源與 TDLib revision 的 Local Bot API GitHub Actions 編譯檢查，產出 Linux amd64 binary 與來源／SHA-256 manifest，三天後移除 artifact；不包含 Bot 憑證或自動部署。
+- 支援公開 YouTube 影片、Shorts 和 youtu.be，可單獨或混合批次下載；需要 Deno，建議 FFmpeg。原匿名下載方式保留，新增的 Cookie、Local API 與偏好選項見下列條目。
+- 完整架構文件含使用者流程、背景時序、狀態、SQLite ER 圖及參考 SQL；根目錄 `AGENTS.md` 定義每次變更須同步 changelog，README 提供文件與逐檔導覽入口。
+- `/settings` 保存每位使用者的 IG連結圖片／限時動態及TikTok全部貼文／全部限時動態及 YouTube 畫質／HDR 偏好。新工作原子保存快照，貼連結後直接下載；不可套用的偏好會回報原因。既有 choice 工作仍可完成。
+- 可選 loopback Local Bot API、最多500 MB直接傳送、較大檔案提供2小時URL。可選 loopback下載服務使用256-bit capability、資料庫只存digest，支援GET／HEAD／單一Range；操作者須配置HTTPS反向代理。未設定URL服務時保留超限檔案並標記部分完成，雲端預設仍有49 MiB安全門檻。
+- 可選外部0600 Netscape YouTube Cookie檔；未設定時維持匿名，僅載入有效YouTube域Cookie。不加入私人帳號池、管理介面或主機設定。
 
 ### Changed
 
-- 記錄已知風險 YT-001：YouTube 分段下載可能跳過 HTTP 404 片段而回報成功並交付缺段檔案；依使用者決定保留現行行為，修復另行追蹤，詳見 `docs/youtube.md`。
+- 預設最高畫質（HDR優先可關閉），H.264只在相同畫質時優先。YouTube有FFmpeg時可直接合併原始串流，不重新壓制；取消720p偏好與低解析度完整H.264的優先地位。
+- Instagram依明確API／DASH CICP標記識別HDR及明確圖片HDR，保留請求計量與Cookie隔離。DASH缺段會失敗，不靜默降級；不猜測HEVC或10-bit必為HDR。
+- 下載已知或串流中的單檔大小超過2000 MB立即取消；同影片分離影音合計限制，保留partial、不將合併副本重複計數。已確認且完整交付的URL檔案2小時清理，直接交付24小時；失敗／部分完成／不明結果原檔保留。
+- 啟動自動遷移新增 `jobs.preferences`、`files.link_retention_until` 與 `links` 表；不重下載既有完成檔、不重送結果不明的媒體。詳見 README、架構及Local API文件。
+- YT-001仍保留：YouTube分段下載可能跳過404片段而交付缺段檔案；本次Instagram嚴格DASH處理不代表此YouTube風險已修復。
 
-- YouTube 優先下載已有畫面與聲音的 H.264 MP4；沒有時才在 FFmpeg 可用下直接合併 H.264＋AAC（stream copy，不重新壓制），最後備援其他完整 MP4／WebM。新增格式選擇、無 FFmpeg 與合併參數回歸，以及 `docs/youtube.md`；整合 main 的 TikTok H.264 與 partial 安全續傳修正，無資料庫遷移。
+### Fixed
 
-- README 加入架構、SQL、維護規則及 changelog 入口與逐檔說明，方便開發者找到對應文件。
+- Local Bot API 本機檔案傳送改用正確的 `file://` URI；原始絕對路徑會被官方服務誤當遠端檔案 ID 而拒絕。保留既有權限／inode檢查，檔名中的空白、百分號和非ASCII文字正確編碼。
+- IG「指定連結中的圖片」改從每條連結的 `img_index` 讀取原始輪播位置，不採用全域圖片序號；缺少或格式無效時下載全部內容；序號不可對應圖片時備援可確認的圖片或原內容並說明。IG限時動態一律下載全部可存取內容，移除手動序號；舊 `stories_selected` 轉為 `stories_all` 並忽略舊序號。TikTok移除指定項目／序號選項，舊偏好轉為對應的全部貼文／全部限時動態。更新設定、help及回歸測試。
+
+- 官方編譯產物檢查同時讀取 stdout／stderr 的版本輸出，支援 upstream `LOG(PLAIN)` 輸出方式。
+- TikTok 續傳格式紀錄不含網址或憑證；格式變更或缺少紀錄時保留舊 partial，避免 H.264／HEVC 混接；格式相同仍可 Range 續傳。保留配額阻擋、完整檔與 partial／紀錄符號連結拒絕。既有 H.264／avc1、完整影音、HTTP 備援及拒絕 HLS 回歸，按新版最高畫質優先規則更新；另涵蓋合併、大小界線、URL 存取／到期及不明收據不重送。
 
 ## [0.1.0] - 2026-11-10
 

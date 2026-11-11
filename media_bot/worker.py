@@ -17,7 +17,7 @@ import time
 import requests
 from requests_toolbelt.multipart.encoder import MultipartEncoder
 from . import core as c
-from . import config,tiktok,video,inbox,twitter
+from . import config,tiktok,video,inbox,twitter,limits,preferences,links
 
 class TelegramError(Exception):
     def __init__(self,code,retry=0):self.code=code;self.retry=retry
@@ -27,25 +27,61 @@ STOP=threading.Event()
 WAKE={platform:threading.Event() for platform in config.PLATFORMS}
 # Striped locks bound memory while preventing duplicate initial status messages.
 _STATUS_LOCKS=[threading.RLock() for _ in range(64)]
+_LARGE_SEND=threading.BoundedSemaphore(1)
+
+def _upload_size(files):
+    total=0
+    for item in (files or {}).values():
+        try:size=os.fstat(item[1].fileno()).st_size
+        except (AttributeError,OSError,TypeError):continue
+        if size>limits.telegram_file_limit():
+            raise ValueError('檔案超過目前 Telegram 傳送上限，請改用下載連結')
+        total+=size
+    return total
+
+def _local_file_payload(data,files):
+    """Use local paths only for opened, verified files inside Bot media storage."""
+    if not limits.local_api_enabled() or os.environ.get('MEDIA_BOT_LOCAL_FILE_UPLOADS')!='1' or len(files)!=1:
+        return None
+    key,item=next(iter(files.items()))
+    if key not in ('document','video','audio','animation','photo','voice','video_note'):
+        return None
+    stream=item[1]
+    try:
+        path=c.safe_file(stream.name).resolve(strict=True)
+        stat=path.stat();opened=os.fstat(stream.fileno())
+        if (stat.st_dev,stat.st_ino,stat.st_size)!=(opened.st_dev,opened.st_ino,opened.st_size):return None
+    except (AttributeError,OSError,TypeError,ValueError):return None
+    # Official Local API treats bare absolute paths as remote file IDs.
+    return {**data,key:path.as_uri()}
 
 def telegram(method,data,files=None):
     token=config.token()
     if not token:raise TelegramError(401)
     if not hasattr(_transport,'session'):_transport.session=requests.Session()
-    url='https://api.telegram.org/bot'+token+'/'+method
-    if files:
-        fields={k:str(v) for k,v in data.items()}
-        fields.update(files);body=MultipartEncoder(fields=fields)
-        r=_transport.session.post(url,data=body,headers={'Content-Type':body.content_type},timeout=(5,300))
-    else:
-        r=_transport.session.post(url,json=data,timeout=(5,35 if method=='getUpdates' else 10))
-    try:
-        try:p=r.json()
-        except ValueError:raise TelegramError(r.status_code)
-        if not p.get('ok'):
-            raise TelegramError(p.get('error_code',500),p.get('parameters',{}).get('retry_after',0))
-        return p['result']
-    finally:r.close()
+    base=limits.telegram_api_base()
+    _transport.session.trust_env=not limits.local_api_enabled()
+    url=base+'/bot'+token+'/'+method
+    size=_upload_size(files)
+    # Long media transfers never block independent getUpdates/status sessions.
+    with _LARGE_SEND if size>=limits.LARGE_UPLOAD_THRESHOLD else contextlib.nullcontext():
+        if files:
+            local=_local_file_payload(data,files)
+            if local is not None:
+                r=_transport.session.post(url,json=local,timeout=(5,limits.MEDIA_SEND_TIMEOUT),allow_redirects=False)
+            else:
+                fields={k:str(v) for k,v in data.items()}
+                fields.update(files);body=MultipartEncoder(fields=fields)
+                r=_transport.session.post(url,data=body,headers={'Content-Type':body.content_type},timeout=(5,limits.MEDIA_SEND_TIMEOUT),allow_redirects=False)
+        else:
+            r=_transport.session.post(url,json=data,timeout=(5,35 if method=='getUpdates' else 10),allow_redirects=False)
+        try:
+            try:p=r.json()
+            except ValueError:raise TelegramError(r.status_code)
+            if not p.get('ok'):
+                raise TelegramError(p.get('error_code',500),p.get('parameters',{}).get('retry_after',0))
+            return p['result']
+        finally:r.close()
 
 
 def status(job,text,buttons=None):
@@ -75,8 +111,15 @@ def authorized_update(u):
     return (chat.get('type')=='private' and actor.get('id')==chat.get('id')
             and not actor.get('is_bot') and config.allowed(chat.get('id')))
 
+def help_text_for_runtime():
+    text='貼上 Instagram、TikTok、Twitter / X 或 YouTube HTTPS 連結；每則最多 50 個。\n/settings 設定 IG／TikTok 貼文或限時動態，以及 YouTube 畫質／HDR。IG「指定連結中的圖片」讀取每條連結的 ?img_index=3（原輪播第 3 項）；缺少或格式無效時下載全部內容，位置超出範圍或不是圖片時下載可確認的圖片，沒有圖片則保留原內容，並說明原因。IG 限時動態一律下載全部可存取內容，不需設定序號；TikTok 只選貼文全部內容或作者全部限時動態。新工作保存設定，不再逐次詢問。\n預設 HDR 優先，然後最高畫質；相同畫質優先 H.264。若偏好無法套用，會說明備援。\n單檔下載超過 2000 MB 立即取消，已有檔案保留。MB 使用十進位。\n'
+    text+=('Local Bot API：單檔最多 500 MB 直接傳送；大於 500 MB 改提供下載連結。' if limits.local_api_enabled() else '目前使用雲端 Bot API：單檔達 49 MiB 改提供下載連結。')
+    text+=('網址及已確認交付的連結檔案只保留 2 小時；直接傳送成功的檔案保留 24 小時。' if links.enabled() else '尚未設定下載網址：超過傳送上限的檔案保留本機並標記部分完成，無法提供連結。')
+    return text
+
 def handle_update(u):
     if not authorized_update(u):return
+    if preferences.handle(u,telegram):return
     if 'callback_query' in u:
         q=u['callback_query'];message=q.get('message',{});chat=message.get('chat',{})
         if chat.get('type')!='private':return
@@ -95,14 +138,14 @@ def handle_update(u):
     chat_id=chat['id'];text=m.get('text','').strip()
     if text.startswith('/'):
         command=text.split()[0].split('@')[0]
-        help_text='貼上 Instagram、TikTok、Twitter / X 或 YouTube HTTPS 連結。IG／TikTok 單一貼文可選下載貼文或作者限時動態；多連結訊息最多 50 個。X 支援貼文；YouTube 支援單條影片和 Shorts。檔案達 49 MiB 會保留在本機，不會傳送。'
+        help_text=help_text_for_runtime()
         telegram('sendMessage',{'chat_id':chat_id,'text':help_text if command in ('/start','/help') else '請輸入 /help 查看使用說明。'})
     else:
         urls=c.extract_urls(text)
         if not urls:telegram('sendMessage',{'chat_id':chat_id,'text':'請貼上 Instagram、TikTok、Twitter / X 或 YouTube HTTPS 連結'});return
         if len(urls)>1:
             try:
-                key=c.enqueue_batch(str(u['update_id'])+':batch',chat_id,urls,m.get('message_id'))
+                key=c.enqueue_batch(str(u['update_id'])+':batch',chat_id,urls,m.get('message_id'),preferences=preferences.load(chat_id))
                 job=c.job_by_id(key)
                 if not job['status_id']:status(job,f'已建立工作，處理 {len(urls)} 個連結')
                 if job['state'] in ('queued','running','cooldown','sending'):WAKE[job['platform']].set()
@@ -113,9 +156,9 @@ def handle_update(u):
             return
         for n,url in enumerate(urls):
             try:
-                key=c.enqueue(str(u['update_id'])+':'+str(n),chat_id,url);job=c.job_by_id(key)
+                key=c.enqueue(str(u['update_id'])+':'+str(n),chat_id,url,preferences=preferences.load(chat_id));job=c.job_by_id(key)
                 if job['state']=='choice':choice(job)
-                elif not job['status_id']:status(job,'解析中／等待下載')
+                elif not job['status_id']:status(job,job['message'] or '解析中／等待下載')
                 WAKE[job['platform']].set()
             except ValueError as e:telegram('sendMessage',{'chat_id':chat_id,'text':str(e)})
 
@@ -159,6 +202,23 @@ def add_files(job,files):
     with c.db() as db:
         for f in files:db.execute('INSERT OR IGNORE INTO files(job,path,name,size) VALUES (?,?,?,?)',(job['id'],f['path'],f['name'],f['size']))
 
+def _oversized_download(root):
+    # Never total the directory: split video/audio and their merged output coexist.
+    for path in root.rglob('*'):
+        try:
+            if not path.is_symlink() and path.is_file() and path.stat().st_size>limits.MAX_DOWNLOAD_BYTES:
+                return True
+        except FileNotFoundError:pass
+    return False
+
+def _cancel_oversized(job,result):
+    if not (result.get('oversize') or result.get('failure')=='too_large'
+            or any(f.get('size',0)>limits.MAX_DOWNLOAD_BYTES for f in result.get('files',[]))):
+        return False
+    c.update(job['id'],state='cancelled',cancel=1,retry_at=0)
+    status(job,'單一檔案超過 2000 MB，已立即取消下載；不會傳送，現有檔案保留待管理員處理。')
+    return True
+
 def capture(job,cookies):
     root=c.DATA/'media'/job['id']
     if '_batch_position' in job:root=root/('item-'+str(job['_batch_position']))
@@ -167,9 +227,16 @@ def capture(job,cookies):
     runner='media_bot.gallery_runner'
     process=subprocess.Popen([sys.executable,'-m',runner],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,text=True)
     try:
-        process.stdin.write(json.dumps({'platform':job['platform'],'mode':job['mode'],'url':job['url'],'root':str(root),'cookies':cookies}));process.stdin.close()
+        snapshot=json.loads(job.get('preferences') or '{}')
+        preferences=snapshot.get(job['platform'],{}) if isinstance(snapshot,dict) else {}
+        process.stdin.write(json.dumps({'platform':job['platform'],'mode':job['mode'],'url':job['url'],'root':str(root),'cookies':cookies,'preferences':preferences}));process.stdin.close()
         deadline=time.monotonic()+1800
         while process.poll() is None:
+            if _oversized_download(root):
+                with contextlib.suppress(ProcessLookupError):os.killpg(process.pid,signal.SIGTERM)
+                with contextlib.suppress(subprocess.TimeoutExpired):process.wait(timeout=2)
+                return {'code':1,'retry_at':0,'auth_required':False,'files':[],
+                        'failure':'too_large','oversize':True}
             if STOP.is_set() or cancelled(job) or time.monotonic()>deadline or shutil.disk_usage(c.DATA).free<5*1024**3:
                 os.killpg(process.pid,signal.SIGTERM);process.wait(timeout=10)
                 if STOP.is_set():return None
@@ -177,7 +244,9 @@ def capture(job,cookies):
                 break
             time.sleep(0.2)
         if cancelled(job):return None
-        return json.loads(result_path.read_text())
+        result=json.loads(result_path.read_text())
+        if _oversized_download(root):result.update(code=1,failure='too_large',oversize=True,files=[])
+        return result
     finally:
         if process.poll() is None:
             with contextlib.suppress(ProcessLookupError):os.killpg(process.pid,signal.SIGKILL)
@@ -195,6 +264,8 @@ def download(job):
     disk_ok();status(job,label+' 下載中（使用已保存 Cookie）' if platform=='tiktok' and cookies else label+' 下載中')
     result=capture(job,cookies)
     if result is None or cancelled(job):return False
+    preferences.record_notice(job['id'],result.get('preference_notice'))
+    if _cancel_oversized(job,result):return False
     if result['retry_at']:
         c.update(job['id'],state='cooldown',retry_at=result['retry_at'])
         reason='每分鐘媒體配額已用完' if result.get('wait_reason')=='quota' else '平台限流'
@@ -275,6 +346,8 @@ def process_batch(job):
             if retry>time.time():raise c.RateLimited(retry)
             url=c.resolve(item['url']);platform,mode=c.classify(url)
             if mode=='resolve':raise ValueError('不支援的分享連結')
+            mode,notice=preferences.route(platform,mode,url,json.loads(job.get('preferences') or '{}').get(platform,{}))
+            preferences.record_notice(job['id'],notice)
             if mode=='choice':mode='post'
             with c.db() as db:db.execute('UPDATE batch_items SET url=?,platform=?,mode=? WHERE job=? AND position=?',(url,platform,mode,job['id'],item['position']))
             _batch_next(job);return
@@ -299,6 +372,8 @@ def process_batch(job):
                 c.update(job['id'],state='paused');status(job,str(error));return
             raise
         if result is None or cancelled(job):return
+        preferences.record_notice(job['id'],result.get('preference_notice'))
+        if _cancel_oversized(job,result):return
         if result['retry_at']:raise c.RateLimited(result['retry_at'])
         reason=''
         if result.get('auth_required'):reason=label+' 此工作帳號的 Cookie 需在設定更新'
@@ -361,12 +436,13 @@ def deliver(job):
             _batch_next(job);return
     c.update(job['id'],state='sending');status(job,'正在傳送媒體')
     with c.db() as db:files=[dict(r) for r in db.execute('SELECT * FROM files WHERE job=? ORDER BY id',(job['id'],))]
+    if _cancel_oversized(job,{'files':files}):return
     if any(f['state']=='uncertain' for f in files):
         _mark_delivery_uncertain(job);return
     # Telegram mobile/forwarded messages rely on sender-supplied dimensions.
     # Probe once per delivery; unknown dimensions fall back to an original file.
     dimensions={f['id']:video.attributes(c.safe_file(f['path'])) for f in files
-                if f['state']=='pending' and Path(f['path']).suffix.lower()=='.mp4' and f['size']<49*1024**2}
+                if f['state']=='pending' and Path(f['path']).suffix.lower()=='.mp4' and f['size']<=limits.telegram_file_limit()}
     # Telegram albums accept 2–10 photo/video entries. Preserve source order.
     pending=[]
     def album(batch):
@@ -397,13 +473,13 @@ def deliver(job):
             for f in batch:f['state']='uncertain'
             _mark_delivery_uncertain(job);raise
     try:
-        candidates=[f for f in files if f['state'] not in ('sent','expired','too_large')]
-        all_album=all(f['state']=='pending' and ((Path(f['path']).suffix.lower()=='.mp4' and bool(dimensions.get(f['id']))) or (Path(f['path']).suffix.lower() in ('.jpg','.jpeg','.png') and f['size']<9*1024**2)) for f in candidates)
+        candidates=[f for f in files if f['state'] not in ('sent','expired')]
+        all_album=all(f['state']=='pending' and f['size']<limits.LARGE_UPLOAD_THRESHOLD and ((Path(f['path']).suffix.lower()=='.mp4' and bool(dimensions.get(f['id']))) or (Path(f['path']).suffix.lower() in ('.jpg','.jpeg','.png') and f['size']<9*1024**2)) for f in candidates)
         # In a batch, group eligible runs even if another item requires a
-        # document fallback; those files are delivered individually.
+        # document or link fallback; those files are delivered individually.
         for f in candidates if all_album or job.get('mode')=='batch' else []:
             ext=Path(f['path']).suffix.lower()
-            eligible=f['state']=='pending' and ((ext=='.mp4' and f['size']<49*1024**2 and bool(dimensions.get(f['id']))) or (ext in ('.jpg','.jpeg','.png') and f['size']<9*1024**2))
+            eligible=f['state']=='pending' and f['size']<limits.LARGE_UPLOAD_THRESHOLD and ((ext=='.mp4' and f['size']<=limits.telegram_file_limit() and bool(dimensions.get(f['id']))) or (ext in ('.jpg','.jpeg','.png') and f['size']<9*1024**2))
             if not eligible:
                 album(pending);pending=[];continue
             pending.append(f)
@@ -415,15 +491,18 @@ def deliver(job):
         if cancelled(job):return
         if f['state'] in ('sent','expired','too_large'):continue
         if f['state']=='uncertain':
-            c.update(job['id'],state='partial');status(job,'部分媒體傳送結果未明，傳送狀態需確認');return
+            c.update(job['id'],state='partial');status(job,'部分媒體傳送結果未明，請管理員確認後重試');return
         path=c.safe_file(f['path'])
         _mark_file_states([f],'uncertain')
         try:
-            if f['size']>=49*1024**2:
-                _mark_file_states([f],'too_large');f['state']='too_large'
-                c.setting('partial:'+job['id'],True)
-                c.setting('partial_reason:'+job['id'],'檔案達 49 MiB，已保留在本機；Telegram 未傳送此檔案。')
-                continue
+            if f['size']>limits.telegram_file_limit():
+                reason='檔案大於 500 MB，改提供下載連結。' if f['size']>limits.MAX_TELEGRAM_BYTES else '目前雲端傳送介面限制為 49 MiB，改提供下載連結。'
+                if not links.enabled():
+                    _mark_file_states([f],'too_large');f['state']='too_large'
+                    c.setting('partial:'+job['id'],True)
+                    c.setting('partial_reason:'+job['id'],reason.replace('改提供下載連結。','')+'尚未設定下載網址，檔案保留在本機，未傳送。')
+                    continue
+                result=telegram('sendMessage',{'chat_id':job['chat'],'text':f['name']+'\n'+reason+'\n檔案及連結保留 2 小時：'+links.create(f['id'])})
             else:
                 ext=path.suffix.lower();kind='video' if ext=='.mp4' and dimensions.get(f['id']) else ('photo' if ext in ('.jpg','.jpeg','.png') and f['size']<9*1024**2 else 'document')
                 data={'chat_id':job['chat']}
@@ -441,14 +520,12 @@ def deliver(job):
             _save_file_rejection(job,[f],e)
             status(job,'Telegram 拒絕傳送，檔案保留待重試');return
         except Exception:
-            _mark_delivery_uncertain(job);status(job,'傳送結果未明，檔案保留；傳送狀態需確認');return
+            _mark_delivery_uncertain(job);status(job,'傳送結果未明，檔案保留；請管理員確認後重試');return
     if cancelled(job):return
-    with c.db() as db:
-        too_large=db.execute("SELECT 1 FROM files WHERE job=? AND state='too_large' LIMIT 1",(job['id'],)).fetchone()
-    partial=c.get_setting('partial:'+job['id'],False) or bool(too_large)
-    if too_large:c.setting('partial_reason:'+job['id'],'檔案達 49 MiB，已保留在本機；Telegram 未傳送此檔案。')
+    partial=c.get_setting('partial:'+job['id'],False)
     c.update(job['id'],state='partial' if partial else 'completed',delivered=time.time())
-    status(job,(('部分下載成功，已傳送可用內容。'+c.get_setting('partial_reason:'+job['id'],'')) if partial else f'完成，共 {len(files)} 個檔案') if files else (('沒有可傳送的媒體。'+c.get_setting('partial_reason:'+job['id'],'')) if partial else '沒有目前可見的限時動態／媒體'))
+    from . import preferences
+    status(job,((('部分下載成功，已傳送可用內容。'+c.get_setting('partial_reason:'+job['id'],'')) if partial else f'完成，共 {len(files)} 個檔案') if files else (('沒有可傳送的媒體。'+c.get_setting('partial_reason:'+job['id'],'')) if partial else '沒有目前可見的限時動態／媒體'))+preferences.notice_text(job['id']))
 
 def platform_loop(platform,stop=None):
     stop=stop or threading.Event()
@@ -477,6 +554,8 @@ def platform_loop(platform,stop=None):
                 url=c.resolve(job['url'])
                 provider,mode=c.classify(url)
                 if mode=='resolve':raise ValueError('不支援的分享連結')
+                mode,notice=preferences.route(provider,mode,url,json.loads(job.get('preferences') or '{}').get(provider,{}))
+                preferences.record_notice(job['id'],notice)
                 c.update(job['id'],url=url,platform=provider,mode=mode,state='choice' if mode=='choice' else 'queued')
                 if mode=='choice':choice(c.job_by_id(job['id']))
                 continue
@@ -535,7 +614,7 @@ def main():
         for sig in (signal.SIGINT,signal.SIGTERM):
             old_handlers[sig]=signal.signal(sig,lambda *_:STOP.set())
     try:
-        with c.db_keeper():_run_main()
+        with c.db_keeper(),links.serving():_run_main()
     finally:
         STOP.set()
         for event in WAKE.values():event.set()

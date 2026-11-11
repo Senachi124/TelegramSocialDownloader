@@ -18,6 +18,7 @@ from twscrape.accounts_pool import AccountsPool
 from twscrape.logger import logger
 import httpx
 from . import core as c, twitter
+from . import download_size
 
 
 class CaptureFailure(Exception):pass
@@ -60,6 +61,7 @@ async def fetch(client,url,path,result):
     media_url(url)
     receipt=path.with_suffix(path.suffix+'.receipt.json')
     if path.is_file() and receipt.is_file():
+        download_size.check(path.stat().st_size)
         saved=json.loads(receipt.read_text())
         if path.stat().st_size==saved['size'] and digest(path)==saved['sha256']:return
     if c.reserve_media('twitter',str(path.resolve())):result['media_attempts']+=1
@@ -75,6 +77,7 @@ async def fetch(client,url,path,result):
             cooldown(result,until);raise CaptureFailure('rate_limited')
         if response.status_code in (401,403):raise CaptureFailure('forbidden')
         response.raise_for_status()
+        download_size.declared(response.headers)
         kind=response.headers.get('content-type','').split(';')[0]
         if not (kind.startswith(('image/','video/')) or kind=='application/octet-stream'):
             raise CaptureFailure('extractor_error')
@@ -82,7 +85,7 @@ async def fetch(client,url,path,result):
         with part.open('wb') as stream:
             async for chunk in response.aiter_bytes():
                 size+=len(chunk)
-                if size>3*1024**3:raise CaptureFailure('extractor_error')
+                download_size.check(size)
                 stream.write(chunk)
         expected=response.headers.get('content-length')
         if not size or expected and size!=int(expected):raise CaptureFailure('network_error')
@@ -124,6 +127,7 @@ def run(p):
     def no_dump(*args,**kwargs):result['provider_error']=True
     models._write_dump=no_dump
     try:asyncio.run(asyncio.wait_for(capture(p,result),timeout=300))
+    except download_size.DownloadTooLarge:download_size.mark(result)
     except c.RateLimited as error:result.update(retry_at=error.until,wait_reason='quota')
     except CaptureFailure as error:result['failure']=str(error)
     except (httpx.HTTPError,TimeoutError):result['failure']='network_error'

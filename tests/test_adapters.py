@@ -214,12 +214,12 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(selected, ['avc'])
         self.assertEqual((result['code'], result['media_attempts']), (0, 1))
 
-    def test_tiktok_selects_best_h264_and_accepts_avc1_alias(self):
+    def test_tiktok_prefers_higher_quality_before_h264_tie(self):
         selected, result = self.select_tiktok_formats([
             self.tiktok_format('avc-low', height=360),
             self.tiktok_format('avc-high', codec='avc1.64001f'),
             self.tiktok_format('hevc-higher', codec='h265', height=1080)])
-        self.assertEqual(selected, ['avc-high'])
+        self.assertEqual(selected, ['hevc-higher'])
         self.assertEqual(result['code'], 0)
 
     def test_tiktok_falls_back_to_complete_hevc_without_h264_audio(self):
@@ -269,15 +269,15 @@ class RunnerTests(unittest.TestCase):
                                   'url': 'https://youtu.be/Abc123_X-yZ'})
         return selected, merge_args, result
 
-    def test_youtube_prefers_complete_h264_over_separate_and_hevc(self):
+    def test_youtube_prefers_higher_quality_split_h264_over_lower_complete(self):
         selected, merges, result = self.select_youtube_formats([
             self.tiktok_format('avc-complete', codec='avc1.42001e', height=360),
             self.tiktok_format('hevc-complete', codec='h265'),
             self.tiktok_format('avc-video', codec='avc1.64001f', acodec='none'),
             self.tiktok_format('aac-audio', vcodec='none', acodec='mp4a.40.2', ext='m4a'),
         ])
-        self.assertEqual(selected, ['avc-complete'])
-        self.assertEqual(merges, [])
+        self.assertEqual(selected, ['avc-video', 'aac-audio'])
+        self.assertEqual(merges, [['-c', 'copy', '-map', '0:v:0', '-map', '1:a:0']])
         self.assertEqual((result['code'], result['media_attempts']), (0, 1))
         self.assertEqual(len(result['files']), 1)
 
@@ -292,12 +292,12 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual((result['code'], result['media_attempts']), (0, 1))
         self.assertEqual([f['name'] for f in result['files']], ['Abc123_X-yZ_00_.mp4'])
 
-    def test_youtube_without_ffmpeg_keeps_complete_h264_preference(self):
+    def test_youtube_without_ffmpeg_selects_highest_complete_quality(self):
         selected, merges, result = self.select_youtube_formats([
             self.tiktok_format('avc-complete', codec='h264', height=360),
             self.tiktok_format('hevc-complete', codec='h265'),
         ], ffmpeg=False)
-        self.assertEqual(selected, ['avc-complete'])
+        self.assertEqual(selected, ['hevc-complete'])
         self.assertEqual((merges, result['code']), ([], 0))
 
     def test_youtube_without_ffmpeg_uses_complete_fallback_not_silent_h264(self):

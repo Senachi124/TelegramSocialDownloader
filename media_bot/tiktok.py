@@ -11,11 +11,13 @@ def options(cookies):
             'photos':True,'audio':False,'covers':False,'cookies-update':False,
             'username':None,'password':None,'netrc':False}
 
-def install(result):
+def install(result,preferences=None):
     """Only an explicit successful empty Story list proves no visible stories."""
     result['sleep_seconds']=0
     from gallery_dl.extractor.tiktok import TiktokStoryItemListRequest,TiktokExtractor
     original=TiktokStoryItemListRequest.extract_items
+    original_urls=TiktokStoryItemListRequest.generate_urls
+    original_video_urls=TiktokExtractor._extract_video_urls
     original_sleep=TiktokExtractor.sleep
     own_sleep=TiktokExtractor.__dict__.get('sleep')
     def sleep(self,seconds,reason):
@@ -35,8 +37,31 @@ def install(result):
                 result['story_listing']='empty'
         return original(self,data)
     TiktokStoryItemListRequest.extract_items=extract_items
+    def generate_urls(self,*args,**kwargs):
+        urls=original_urls(self,*args,**kwargs)
+        identities=[str(item.get('id')) for item in urls.values() if isinstance(item,dict)]
+        result['_story_positions']={key:index for index,key in enumerate(identities,1)}
+        result['_story_count']=len(identities)
+        return urls
+    TiktokStoryItemListRequest.generate_urls=generate_urls
+    def video_urls(self,video):
+        from .media_preferences import quality,record_notice
+        cap=quality(preferences)
+        variants=video.get('bitrateInfo')
+        if cap and variants:
+            variants=variants if isinstance(variants,list) else [variants]
+            eligible=[v for v in variants if int((v.get('PlayAddr') or {}).get('Height') or 0)<=cap]
+            if not eligible:
+                minimum=min(int((v.get('PlayAddr') or {}).get('Height') or 0) for v in variants)
+                eligible=[v for v in variants if int((v.get('PlayAddr') or {}).get('Height') or 0)==minimum]
+                record_notice(result,'來源沒有偏好的畫質，已改為下載最接近的可用畫質。')
+            video={**video,'bitrateInfo':eligible}
+        return original_video_urls(self,video)
+    TiktokExtractor._extract_video_urls=video_urls
     def restore():
         TiktokStoryItemListRequest.extract_items=original
+        TiktokStoryItemListRequest.generate_urls=original_urls
+        TiktokExtractor._extract_video_urls=original_video_urls
         if own_sleep is None:del TiktokExtractor.sleep
         else:TiktokExtractor.sleep=own_sleep
     return restore

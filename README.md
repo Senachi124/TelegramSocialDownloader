@@ -2,10 +2,10 @@
 
 獨立背景服務核心：接收 Telegram 私人訊息中的 Instagram、TikTok、Twitter／X 和 YouTube 連結，下載媒體並傳回同一個對話。
 
-- Instagram 貼文、Reels、限時動態；貼文可選擇下載內容或作者限時動態。
+- Instagram 貼文、Reels、限時動態；用 `/settings` 預先指定內容與 HDR 偏好，貼連結後直接下載。
 - TikTok 影片、照片貼文及平台允許存取的限時動態；支援分享短連結。
 - Twitter／X 單篇貼文的圖片、影片及動態圖片。
-- YouTube 公開影片及 Shorts：接受 `youtube.com/watch?v=…`、`youtube.com/shorts/…` 和 `youtu.be/…`。可以混入批次；有播放清單參數時只下載該影片。不支援播放清單、頻道、進行中直播或需登入的內容。
+- YouTube 公開影片及 Shorts：接受 `youtube.com/watch?v=…`、`youtube.com/shorts/…` 和 `youtu.be/…`。可以混入批次；有播放清單參數時只下載該影片。不支援播放清單、頻道或進行中直播；預設匿名，可選擇外部 YouTube Cookie。
 - 每則訊息最多 50 個連結、SQLite 持久佇列、平台限流冷卻及下載續作。
 - 串流上傳、圖片／影片相簿和逐檔傳送收據。傳送結果不明時保留檔案，不自動重送。
 
@@ -15,7 +15,7 @@
 
 需要 Linux、Python 3.11+，建議安裝 `ffprobe` 以取得影片尺寸；缺少時會以原始文件傳送影片。
 
-YouTube 請將 [Deno](https://github.com/yt-dlp/yt-dlp/wiki/EJS) 加入 bot 程序的 `PATH`；既有 `yt-dlp[default]` 依賴已包括 EJS。優先下載已有畫面與聲音的 H.264 MP4；沒有時，若有 FFmpeg，使用 H.264＋AAC 原始串流直接合併（stream copy，不重新壓制）。最後備援為其他完整 MP4／WebM；沒有 FFmpeg 時跳過分離串流。YouTube 不需要 Cookie 設定。完整格式順序、CPU／檔案大小取捨見 [YouTube 下載說明](docs/youtube.md)。
+YouTube 請將 [Deno](https://github.com/yt-dlp/yt-dlp/wiki/EJS) 加入 bot 程序的 `PATH`；既有依賴已包括 EJS。預設 HDR 優先，然後選最高畫質，H.264 僅在相同畫質時優先。建議安裝 FFmpeg 合併原始影音串流（不重新壓制）；沒有 FFmpeg 時只選完整影音。完整選擇規則見 [YouTube 下載說明](docs/youtube.md)。
 
 ```sh
 python3 -m venv .venv
@@ -33,8 +33,13 @@ python3 -m venv .venv
 | `INSTAGRAM_COOKIES_FILE` | 外部 JSON Cookie 物件路徑；Instagram 需要 `sessionid`、`csrftoken`。 |
 | `TIKTOK_COOKIES_FILE` | 外部 JSON Cookie 物件路徑；沒有設定時嘗試公開內容。 |
 | `TWITTER_COOKIES_FILE` | 外部 JSON Cookie 物件路徑；X 需要 `auth_token`、`ct0`。 |
+| `YOUTUBE_COOKIES_FILE` | 可選外部 Netscape Cookie 檔；只接受 YouTube 域 Cookie，未設定時匿名。 |
+| `MEDIA_BOT_API_BASE` | 預設官方雲端 API；可設 `http://127.0.0.1:8081` 使用自行運行的 Local Bot API。只接受 literal loopback HTTP。 |
+| `MEDIA_BOT_LOCAL_FILE_UPLOADS` | 可選 `1`，讓 Local Bot API 讀取相同絕對路徑的媒體；預設 multipart。 |
+| `MEDIA_BOT_DOWNLOAD_BASE_URL` | 可選 HTTPS 下載前綴，例如 `https://downloads.example.com/files`；未設時不啟動 URL 服務。 |
+| `MEDIA_BOT_DOWNLOAD_PORT` | URL 服務在 `127.0.0.1` 監聽的埠，預設 `8090`。 |
 
-Cookie 檔案格式是名稱到字串值的 JSON 物件。Token／Cookie 檔案必須在程式目錄及資料目錄以外，檔案權限為 `0600`，不能是符號連結。登入資料由執行環境提供。只向明確允許的使用者提供此 Bot；他們能取得執行者 Cookie 有權存取的內容。
+Instagram／TikTok／X Cookie 檔案格式是名稱到字串值的 JSON 物件；YouTube 使用 Netscape 格式。Token／Cookie 檔案必須在程式目錄及資料目錄以外，檔案權限為 `0600`，不能是符號連結。登入資料由執行環境提供。只向明確允許的使用者提供此 Bot；他們能取得執行者 Cookie 有權存取的內容。
 
 ```sh
 .venv/bin/python -m media_bot --check
@@ -43,15 +48,19 @@ Cookie 檔案格式是名稱到字串值的 JSON 物件。Token／Cookie 檔案�
 
 第一個指令只驗證設定，不連線；第二個持續執行背景輪詢。每個 Bot token／資料目錄只執行一個實例，不要同時使用 webhook 或另一個輪詢程序。可由自己的程序監督工具執行上述命令。
 
-在 Telegram 輸入 `/help` 或貼上連結即可。啟用權限由外部靜態 User ID 設定決定。
+在 Telegram 輸入 `/help`、`/settings` 或貼上連結即可。`/settings instagram 1,3` 指定原貼文第 1、3 項圖片；TikTok 也可指定項目。限時動態序號按擷取順序。工作保存送出時的設定，之後修改不影響排隊工作。偏好無法套用時回報備援原因。啟用權限由外部靜態 User ID 設定決定。
 
 ## 儲存與失敗處理
 
 媒體和暫存同在 `MEDIA_BOT_DATA` 檔案系統；至少保留 5 GiB 可用空間，媒體暫存達 3 GiB 時停止新增下載。掛載及儲存裝置身分驗證由執行環境負責。
 
-成功傳送且工作完整完成的本機媒體，24 小時後可自動清理。失敗、部分完成或傳送結果不明的媒體保留。Cookie 失效的工作暫停；更新外部 Cookie 後可重新提交連結。平台冷卻和已排隊工作會自動續作。
+單檔下載超過 **2000 MB** 立即取消（十進位 MB）；已知大小在下載前拒絕，未知大小在串流過程中停止，已有 partial 保留。分離影音以同一影片的合計大小計算，不重複計算合併檔。
 
-為使用標準 Telegram Bot API，單檔達 49 MiB 時保留本機檔案並提示不能傳送；這類提示不會被記錄為檔案傳送成功。`partial`／`too_large` 工作需要執行者從資料目錄另行處理，不會自動重送。對結果不明的傳送，先確認 Telegram 實際收件再決定是否重新提交，避免重複。
+使用 Local Bot API 時，**最多 500 MB** 直接傳送；超過 500 MB 提供 URL 並說明原因。使用預設雲端 API 時，達 49 MiB 改走 URL。URL 服務是可選項：未設定時保留本機檔案並標記 `partial`／`too_large`，不會虛構網址或記錄為傳送成功。
+
+下載網址及已確認交付、工作完整完成的連結檔案保留 **2 小時**；直接成功傳送的檔案保留 24 小時。失敗、部分完成或結果不明的原檔保留供處理，網址仍會到期。Cookie 失效工作暫停；更新外部 Cookie 後可重新提交。結果不明的傳送不會自動重送。
+
+Local Bot API 的 `api_id`／`api_hash` 由操作者向 Telegram 取得並供給獨立 API 程序，並非 Bot token。本 repository 不包含 daemon、主機服務設定或登入資訊。URL 服務需要自行設定 HTTPS 反向代理；啟動、權限、資源及遷移說明見 [Local API 與下載網址](docs/local-api.md)。
 
 第三方平台可能要求登入、驗證或限制地區；相容性取決於平台回應。依賴版本刻意固定，Instagram adapter 必須配合指定的 gallery-dl 版本升級。
 
@@ -76,13 +85,12 @@ Cookie 檔案格式是名稱到字串值的 JSON 物件。Token／Cookie 檔案�
 
 1. `__main__.py` 解析啟動參數，`config.py` 驗證外部設定，再啟動 `worker.main()`。
 2. `worker.poll()` 向 Telegram 取得訊息；`inbox.store()` 同時保存合資格的私人訊息與輪詢 offset。不同對話可並行，同一對話保持處理順序。
-3. `worker.handle_update()` 處理連結及貼文／限時動態選擇；`core.py` 驗證網址並寫入單筆或批次工作。
+3. `worker.handle_update()` 處理連結及每位使用者的設定快照；`core.py` 驗證網址並寫入單筆或批次工作。
 4. 各平台 worker 挑選工作，透過子程序執行 `gallery_runner.py`。TikTok 影片和 YouTube 影片轉交 `yt_runner.py`，X 貼文轉交 `twitter_runner.py`；Instagram 與其他 TikTok 內容使用 gallery-dl。
 5. Runner 保存媒體與結果；`worker.deliver()` 傳送相簿、影片、圖片或文件。`video.py` 提供影片尺寸與時長，SQLite 保存逐檔 Telegram 收據。
 6. 平台限流會記錄冷卻時間；傳送結果不明時保留檔案以避免自動重送。維護迴圈清理符合保留期限的已完成媒體與已處理收件紀錄。
 
-TikTok 影片優先下載已有畫面與聲音的 H.264 MP4（HTTPS），在這些格式中選擇最佳可用版本；沒有符合格式時，依序退回其他 HTTPS MP4、其他 HTTPS 完整影音及 HTTP 完整影音。不合併分離影音、不重新編碼，也不固定限制為 720p。相容性優先可能選到較低解析度或較大的檔案；49 MiB 傳送門檻仍適用，既有完成檔不會自動重新下載。
-
+TikTok 影片從完整 HTTPS 影音選擇最高畫質，H.264 僅在相同畫質時優先；無 HTTPS 時可備援 HTTP。不合併分離影音、不轉碼。Instagram 依明確 API／DASH CICP 標記判斷 HDR，不把 HEVC 或 10-bit 自動視為 HDR；可關閉 HDR 優先。
 TikTok 續傳以每個輸出檔旁的 `.format.json` 記錄格式識別與影音規格，不記錄媒體網址或憑證。只有格式紀錄相符才續傳 `.part`；舊版沒有紀錄或格式改變時，先將未完成內容保留為同目錄的 `.part.preserved-<隨機識別碼>`，再從頭下載，避免把 HEVC 前段與 H.264 後段拼接。保留檔不會傳送，也不由已完成媒體清理自動刪除；配額阻擋時不改動續傳資料。
 
 輸入是 Telegram 訊息、網址及外部設定；輸出是 Telegram 媒體訊息、本機媒體、下載結果與 SQLite 狀態。執行時主要資料包含 `state.sqlite3`、`instagram-api-rate.sqlite3`、`media/` 及 `tmp/`，全部在明確指定的資料目錄下建立。
@@ -127,7 +135,7 @@ TikTok 續傳以每個輸出檔旁的 `.format.json` 記錄格式識別與影音
 | 檔案 | 內容與用途 |
 | --- | --- |
 | [media_bot/tiktok.py](media_bot/tiktok.py) | TikTok 影片／照片／限時動態分流、gallery-dl 選項、Story 目標和空清單判定、重試退避及使用者錯誤訊息。 |
-| [media_bot/yt_runner.py](media_bot/yt_runner.py) | 使用 yt-dlp 下載 TikTok 和 YouTube 影片；優先完整 H.264 MP4，各自套用格式備援、路徑、媒體配額及 HTTP 冷卻規則。Cookie 僅用於 TikTok；YouTube 可在沒有完整 H.264 時直接合併 H.264／AAC，不轉碼。 |
+| [media_bot/yt_runner.py](media_bot/yt_runner.py) | 使用 yt-dlp 下載 TikTok 和 YouTube；依快照套用畫質、HDR與同畫質H.264偏好，套用媒體大小、配額及冷卻。YouTube可選獨立Cookie與FFmpeg原樣合併。 |
 | [media_bot/twitter.py](media_bot/twitter.py) | X 貼文 URL／ID 驗證、Cookie 格式解析輔助函式、原圖與最高 bitrate MP4 選擇，以及錯誤訊息分類。外部啟動設定仍使用 `config.py` 的 JSON Cookie 物件格式。 |
 | [media_bot/twitter_runner.py](media_bot/twitter_runner.py) | 以 twscrape 查詢 X 貼文，使用記憶體中的登入資料，從媒體 CDN 串流下載；以 SHA-256 收據驗證已有檔案，保存限流狀態並停用 provider dump／telemetry。 |
 
@@ -149,3 +157,5 @@ TikTok 續傳以每個輸出檔旁的 `.format.json` 記錄格式識別與影音
 | [docs/architecture.md](docs/architecture.md) | 使用者流程、背景處理時序、工作／檔案狀態圖、兩個 SQLite 資料庫的 ER 圖、逐欄位說明及恢復界線。 |
 | [docs/state-schema.sql](docs/state-schema.sql) | 從核心初始化程式整理的工作資料庫 DDL，涵蓋 7 張表、外鍵、唯一鍵及索引。 |
 | [docs/instagram-rate-schema.sql](docs/instagram-rate-schema.sql) | 從 Instagram 限速器整理的 3 張表 DDL；只描述結構，初始化時間由程式設定。 |
+
+新增模組：`preferences.py`（每位使用者設定）、`media_preferences.py`（下載選擇）、`limits.py`／`download_size.py`（傳送／下載限制）、`links.py`（可選URL服務）、`instagram_quality.py`（明確HDR判斷）、`youtube_cookies.py`（限定域Netscape parser）。

@@ -77,6 +77,21 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn(str(path), str(caught.exception))
         self.assertNotIn('private-fixture', str(caught.exception))
 
+    def test_optional_youtube_netscape_input_uses_same_external_file_boundary(self):
+        path = self.root / 'youtube-fixture.txt'
+        path.write_text('# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsynthetic-session\n')
+        path.chmod(0o600)
+        os.environ['YOUTUBE_COOKIES_FILE'] = str(path)
+        value = config.cookies('youtube')
+        self.assertEqual(value['version'], 1)
+        self.assertEqual(value['items'][0]['domain'], '.youtube.com')
+        path.chmod(0o644)
+        with self.assertRaises(config.ConfigurationError):config.cookies('youtube')
+
+    def test_local_endpoint_rejects_remote_hosts_before_runtime_start(self):
+        with patch.dict(os.environ, MEDIA_BOT_API_BASE='http://192.0.2.1:8081'):
+            with self.assertRaises(config.ConfigurationError):config.validate()
+
     def test_validate_sets_private_temp_directory(self):
         old_temp, old_mask = tempfile.tempdir, os.umask(0o077)
         try:

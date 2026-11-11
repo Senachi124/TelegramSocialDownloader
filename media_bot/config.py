@@ -70,7 +70,11 @@ def token():
 
 def cookies(platform):
     if platform == 'youtube':
-        return {}
+        raw = _read_external('YOUTUBE_COOKIES_FILE', optional=True)
+        if raw is None:return {}
+        from .youtube_cookies import parse
+        try:return parse(raw)
+        except ValueError:raise ConfigurationError('YOUTUBE_COOKIES_FILE requires valid Netscape cookies') from None
     if platform not in _FILES:
         raise ConfigurationError('Unsupported download platform')
     raw = _read_external(_FILES[platform], optional=True)
@@ -94,6 +98,10 @@ def cookies(platform):
 
 
 def validate():
+    from . import limits,links
+    try:limits.telegram_api_base()
+    except ValueError:raise ConfigurationError('MEDIA_BOT_API_BASE must use the official API or literal loopback HTTP endpoint') from None
+    links.configuration()
     os.umask(0o077)
     root = data_dir()
     _allowed_users()

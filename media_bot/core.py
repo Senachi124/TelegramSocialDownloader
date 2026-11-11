@@ -16,6 +16,7 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import parse_qs, urlsplit, urlunsplit, urljoin
 
 from . import config
+from .limits import LINK_TTL_SECONDS,DIRECT_RETENTION_SECONDS
 
 DATA = config.data_dir()
 ACTIVE = ('choice','queued','running','cooldown','sending','paused')
@@ -86,6 +87,7 @@ def initialize():
     with db() as c:
         c.executescript('''
         PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS links(token TEXT PRIMARY KEY,file INTEGER REFERENCES files(id),expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT);
         CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, update_key TEXT UNIQUE, chat INTEGER,
           url TEXT, platform TEXT, mode TEXT, state TEXT, message TEXT DEFAULT '', status_id INTEGER,
@@ -105,6 +107,10 @@ def initialize():
         CREATE TABLE IF NOT EXISTS media_budget(platform TEXT,item TEXT,time REAL,PRIMARY KEY(platform,item));
         CREATE INDEX IF NOT EXISTS media_budget_time ON media_budget(platform,time);
         ''')
+        columns={r[1] for r in c.execute('PRAGMA table_info(jobs)')}
+        if 'preferences' not in columns:c.execute("ALTER TABLE jobs ADD COLUMN preferences TEXT NOT NULL DEFAULT '{}'")
+        columns={r[1] for r in c.execute('PRAGMA table_info(files)')}
+        if 'link_retention_until' not in columns:c.execute('ALTER TABLE files ADD COLUMN link_retention_until REAL NOT NULL DEFAULT 0')
 
 def get_setting(key, default=None):
     with db() as c: row=c.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()
@@ -227,8 +233,22 @@ def resolve(url):
         finally:conn.close()
     raise ValueError('分享連結重新導向次數過多')
 
-def enqueue(key,chat,url):
+def _serialized_preferences(value):
+    if value is None:return '{}'
+    try:
+        if not isinstance(value,dict):raise ValueError()
+        result=json.dumps(value,ensure_ascii=False,allow_nan=False)
+        if len(result.encode('utf-8'))>16384:raise ValueError()
+        return result
+    except (ValueError,TypeError):raise ValueError('下載偏好格式無效') from None
+
+def enqueue(key,chat,url,*,preferences=None):
     url=validate_url(url);platform,mode=classify(url)
+    snapshot=_serialized_preferences(preferences)
+    notice=''
+    if preferences is not None:
+        from .preferences import route
+        mode,notice=route(platform,mode,url,preferences.get(platform,{}))
     with db() as c:
         c.execute('BEGIN IMMEDIATE')
         if not config.allowed(chat):raise ValueError('此帳號尚未獲准使用')
@@ -237,11 +257,13 @@ def enqueue(key,chat,url):
         count=c.execute("SELECT count(*) FROM jobs WHERE state IN ('choice','queued','running','cooldown','sending','paused')").fetchone()[0]
         if count>=100:raise ValueError('佇列已滿，請等待現有工作完成')
         job=secrets.token_hex(8)
-        c.execute('INSERT INTO jobs(id,update_key,chat,url,platform,mode,state,created) VALUES (?,?,?,?,?,?,?,?)',
-                  (job,key,chat,url,platform,mode,'choice' if mode=='choice' else 'queued',time.time()))
+        c.execute('INSERT INTO jobs(id,update_key,chat,url,platform,mode,state,created,preferences,message) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                  (job,key,chat,url,platform,mode,'choice' if mode=='choice' else 'queued',time.time(),snapshot,notice))
+        if notice:
+            c.execute('INSERT INTO settings(key,value) VALUES (?,?)',('preference_notice:'+job,json.dumps([str(notice)[:500]])))
     return job
 
-def enqueue_batch(key,chat,urls,message_id):
+def enqueue_batch(key,chat,urls,message_id,*,preferences=None):
     """Create one durable task, including independently invalid links, atomically.
 
     Batch post links download the post; single-link enqueue retains its choice UI.
@@ -249,11 +271,16 @@ def enqueue_batch(key,chat,urls,message_id):
     """
     if not urls:raise ValueError('請貼上下載連結')
     if len(urls)>50:raise ValueError('每個工作最多支援 50 個連結，請分成多則訊息')
-    items=[]
-    for original in urls:
+    snapshot=_serialized_preferences(preferences)
+    items=[];notices=[]
+    for position,original in enumerate(urls,1):
         try:
             url=validate_url(original)
             platform,mode=classify(url)
+            if preferences is not None:
+                from .preferences import route
+                mode,notice=route(platform,mode,url,preferences.get(platform,{}))
+                if notice:notices.append(f'第 {position} 個連結：'+str(notice)[:500])
             items.append((original,url,platform,'post' if mode=='choice' else mode,'pending',''))
         except ValueError:
             # URL parsing exceptions can include untrusted data; use a fixed message.
@@ -267,8 +294,10 @@ def enqueue_batch(key,chat,urls,message_id):
         count=con.execute("SELECT count(*) FROM jobs WHERE state IN ('choice','queued','running','cooldown','sending','paused')").fetchone()[0]
         if count>=100:raise ValueError('佇列已滿，請等待現有工作完成')
         job=secrets.token_hex(8)
-        con.execute('INSERT INTO jobs(id,update_key,chat,url,platform,mode,state,created) VALUES (?,?,?,?,?,?,?,?)',
-                    (job,key,chat,first[1] if first else '',first[2] if first else 'instagram','batch','queued',time.time()))
+        con.execute('INSERT INTO jobs(id,update_key,chat,url,platform,mode,state,created,preferences) VALUES (?,?,?,?,?,?,?,?,?)',
+                    (job,key,chat,first[1] if first else '',first[2] if first else 'instagram','batch','queued',time.time(),snapshot))
+        if notices:
+            con.execute('INSERT INTO settings(key,value) VALUES (?,?)',('preference_notice:'+job,json.dumps(notices)))
         con.execute('INSERT INTO batch_requests(job,message_id) VALUES (?,?)',(job,message_id))
         con.executemany('INSERT INTO batch_items(job,position,original_url,url,platform,mode,state,error) VALUES (?,?,?,?,?,?,?,?)',
                         [(job,n,*item) for n,item in enumerate(items)])
@@ -286,22 +315,26 @@ def safe_file(path):
 
 def cleanup():
     # Only confirmed deliveries expire. Bound each pass, skip expired rows, and
-    # release the writer between files instead of holding it over the whole media walk.
+    # release the writer between files instead of holding it over the whole HDD walk.
     eligible="""FROM files f JOIN jobs j ON j.id=f.job
-      WHERE f.state='sent' AND j.state='completed' AND j.delivered<?"""
+      WHERE f.state='sent' AND j.state='completed'
+      AND ((f.link_retention_until>0 AND f.link_retention_until<=?)
+        OR (f.link_retention_until=0 AND j.delivered<?))
+      AND NOT EXISTS(SELECT 1 FROM links l WHERE l.file=f.id AND l.expires>?)"""
     now=time.time()
     with db() as c:
-        rows=c.execute('SELECT f.id '+eligible+' ORDER BY f.id LIMIT 16',(now-86400,)).fetchall()
+        rows=c.execute('SELECT f.id '+eligible+' ORDER BY f.id LIMIT 16',(now,now-DIRECT_RETENTION_SECONDS,now)).fetchall()
     for row in rows:
         with db() as c:
-            # Serialize the final eligibility check with job changes.
+            # Serialize the final eligibility check with link creation/job changes.
             # A failed BEGIN leaves the file untouched for a later pass.
             c.execute('BEGIN IMMEDIATE')
             now=time.time()
             current=c.execute('SELECT f.path '+eligible+' AND f.id=?',
-                              (now-86400,row['id'])).fetchone()
+                              (now,now-DIRECT_RETENTION_SECONDS,now,row['id'])).fetchone()
             if current is None:continue
             safe_file(current['path']).unlink(missing_ok=True)
             c.execute("UPDATE files SET state='expired' WHERE id=?",(row['id'],))
     with db() as c:
+        c.execute('DELETE FROM links WHERE expires<?',(time.time(),))
         c.execute("UPDATE jobs SET state='cancelled',message='選擇已逾時' WHERE state='choice' AND created<?",(time.time()-86400,))

@@ -6,6 +6,7 @@ import sys
 import time
 from email.utils import parsedate_to_datetime
 from . import core as c
+from . import download_size,media_preferences
 
 class StopDownload(BaseException):pass
 
@@ -21,6 +22,7 @@ def main():
     import requests
     from gallery_dl import config,job
     adapter=instagram if platform=='instagram' else tiktok
+    preferences=p.get('preferences') or {}
     root=Path(p['root']);root.mkdir(parents=True,exist_ok=True)
     result={'code':1,'retry_at':0,'auth_required':False,'files':[],
             'failure':'','http_errors':[],'cookie_used':bool(p.get('cookies')),'started':time.time(),'requests':0,'media_attempts':0,'wait_reason':''}
@@ -46,6 +48,25 @@ def main():
             result.update(retry_at=max(time.time()+900,until),wait_reason='platform')
             c.setting(platform+'_cooldown',result['retry_at'])
             response.close();raise StopDownload()
+        if response.status_code in (200,206):
+            offset=0
+            if response.status_code==206:
+                prefix=(response.headers.get('Content-Range','').partition(' ')[2].partition('-')[0])
+                if prefix.isdecimal():offset=int(prefix)
+            try:download_size.declared(response.headers,offset=offset)
+            except download_size.DownloadTooLarge:
+                response.close();raise
+            original_content=response.iter_content
+            consumed=offset
+            def content(*args,**kwargs):
+                nonlocal consumed
+                for chunk in original_content(*args,**kwargs):
+                    consumed+=len(chunk)
+                    try:download_size.check(consumed)
+                    except download_size.DownloadTooLarge:
+                        response.close();raise
+                    yield chunk
+            response.iter_content=content
         return response
     requests.adapters.HTTPAdapter.send=send
     class Errors(logging.Handler):
@@ -72,6 +93,23 @@ def main():
     job.DownloadJob.download=download
     ordered=[];handle_url=job.DownloadJob.handle_url
     def handle(self,url,data):
+        position=int(data.get('num') or 1)
+        total=data.get('count')
+        if platform=='tiktok':
+            if p.get('mode')=='stories':
+                position=result.get('_story_positions',{}).get(str(data.get('id')),0)
+                total=result.get('_story_count')
+            elif isinstance(data.get('imagePost'),dict):total=len(data['imagePost'].get('images') or [])
+        video=bool(data.get('video_url') or data.get('_ytdl_manifest') or data.get('extension') in ('mp4','webm','mov'))
+        if not media_preferences.include(preferences,position,video=video,total=total,
+                                         has_images=data.get('_preference_has_images'),
+                                         image_positions=data.get('_preference_image_indices'),result=result):return
+        if platform=='instagram' and video:
+            if data.get('_ytdl_manifest'):
+                # A failed manifest must not silently bypass the selected HDR variant.
+                data.pop('_fallback',None)
+            elif (cap:=media_preferences.quality(preferences)) and int(data.get('height') or 0)>cap:
+                media_preferences.record_notice(result,'來源沒有偏好的畫質，已改為下載最接近的可用畫質。')
         value=handle_url(self,url,data)
         path=Path(self.pathfmt.realpath)
         if path.is_file() and not path.is_symlink() and path not in ordered:ordered.append(path)
@@ -79,10 +117,12 @@ def main():
     job.DownloadJob.handle_url=handle
     restore_adapter=lambda:None
     try:
-        restore_adapter=adapter.install(result)
+        restore_adapter=adapter.install(result,preferences)
         url=adapter.target(p['url'],p.get('mode','post'))
         result['code']=job.DownloadJob(url).run() or 0
         if result.get('error') or result['auth_required']:result['code']=1
+    except download_size.DownloadTooLarge:download_size.mark(result)
+    except download_size.DownloadStopped:result['code']=1
     except StopDownload:result['code']=1
     except Exception as error:
         result['code']=1;result['exception']=type(error).__name__
@@ -94,7 +134,9 @@ def main():
         restore_adapter()
         for f in [*ordered,*sorted(set(root.iterdir())-set(ordered))]:
             if f.is_file() and not f.is_symlink() and f.suffix.lower() in ('.mp4','.webm','.mov','.jpg','.jpeg','.png','.webp','.gif'):
-                result['files'].append({'path':str(f),'name':f.name,'size':f.stat().st_size})
+                size=f.stat().st_size
+                if size>download_size.limits.MAX_DOWNLOAD_BYTES:download_size.mark(result)
+                else:result['files'].append({'path':str(f),'name':f.name,'size':size})
         if platform=='tiktok':
             failed=bool(result['code'] or result.get('error'))
             if p.get('mode')=='stories' and result.get('story_listing') not in ('found','empty'):
@@ -103,12 +145,14 @@ def main():
                 failed=True
             if failed:
                 result['code']=1
-                if 401 in result['http_errors']:result['failure']='login_required'
+                if result.get('oversize'):result['failure']='too_large'
+                elif 401 in result['http_errors']:result['failure']='login_required'
                 elif 403 in result['http_errors'] and result['failure']!='login_required':result['failure']='forbidden'
                 if not result['failure']:
                     result['failure']=('login_required' if 401 in result['http_errors'] else 'forbidden' if 403 in result['http_errors'] else 'unavailable' if 404 in result['http_errors'] else 'extractor_error' if result.get('error') else 'empty_unconfirmed')
             else:result['failure']=''
         result['finished']=time.time()
+        result.pop('_story_positions',None);result.pop('_story_count',None)
         tmp=root/'result.tmp';tmp.write_text(json.dumps(result));tmp.replace(root/'result.json')
 
 if __name__=='__main__':main()

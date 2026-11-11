@@ -1,4 +1,4 @@
-"""Instagram extraction options and Story routing."""
+"""Instagram extraction options, quality preferences and Story routing."""
 import re
 
 def options(cookies):
@@ -8,9 +8,15 @@ def options(cookies):
             'metadata':True,'user-cache':'memory','user-agent':'+chrome',
             'include':['stories']}
 
-def install(result):
+def install(result,preferences=None):
     from .instagram_web_gallery import install_web_graphql
-    return install_web_graphql(result)
+    from .instagram_quality import install as install_quality
+    restore_web=install_web_graphql(result)
+    restore_quality=install_quality(result,preferences)
+    def restore():
+        restore_quality()
+        if restore_web:restore_web()
+    return restore
 
 def target(url,mode):
     if mode!='stories':return url

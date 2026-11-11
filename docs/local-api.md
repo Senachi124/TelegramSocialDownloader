@@ -52,3 +52,7 @@ location ^~ /files/ {
 ## 可選官方程式編譯
 
 `.github/workflows/build-local-bot-api.yml` 在 Ubuntu 24.04 以四個編譯工作建置固定的官方 Bot API／TDLib revision。工作流程只有 repository read 權限，不讀取 Bot 憑證，也不自動部署。產物 `telegram-bot-api-linux-amd64` 包含 binary 與 `build-manifest.json`，保留三天。使用前核對 workflow 的來源 commit、成功狀態、artifact digest、manifest SHA-256 及目標機器的 shared library 相容性；這不是 upstream 簽署的 release。
+
+## 內容設定
+
+IG「指定連結中的圖片」讀取每條URL的 `img_index`。缺少或格式無效時下載全部內容；數字位置超出範圍或不是圖片時下載可確認的圖片，沒有圖片則保留原內容，並說明原因。IG限時動態一律下載全部可存取內容，不需設定序號；舊 `stories_selected` 與手動序號改為全部限時動態。TikTok只有全部貼文／全部限時動態。這些設定不新增逐連結詢問。

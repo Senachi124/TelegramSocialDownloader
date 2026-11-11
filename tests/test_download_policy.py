@@ -89,6 +89,14 @@ class PreferenceTests(unittest.TestCase):
             self.assertEqual(chosen['content'],wanted);self.assertNotIn('indices',chosen)
             self.assertTrue(all(media_preferences.include(chosen,n,total=3) for n in (1,2,3)))
 
+    def test_legacy_instagram_story_selection_downloads_all_without_saved_indices(self):
+        for content in ('stories_selected','stories_all'):
+            saved={'content':content,'indices':[2],'prefer_hdr':True}
+            chosen=media_preferences.effective(saved,'https://www.instagram.com/stories/example/123/','stories')
+            self.assertEqual(chosen['content'],'stories_all');self.assertNotIn('indices',chosen)
+            self.assertEqual(saved['indices'],[2])
+            self.assertTrue(all(media_preferences.include(chosen,n,total=3) for n in (1,2,3)))
+
     def test_numeric_quality_uses_nearest_available_fallback(self):
         from yt_dlp import YoutubeDL
         def fmt(height):return dict(format_id=str(height),url=f'https://example.test/{height}.mp4',
@@ -115,9 +123,10 @@ class PreferenceTests(unittest.TestCase):
         from gallery_dl import config
         from gallery_dl.downloader.ytdl import YoutubeDLDownloader
         from yt_dlp import YoutubeDL
-        prefs={'content':'stories_selected','indices':[1,9],'quality':'720','prefer_hdr':True}
+        prefs=media_preferences.effective({'content':'post_images','quality':'720','prefer_hdr':True},
+            'https://www.instagram.com/p/ExamplePost/?img_index=1','post')
         result={}
-        self.assertTrue(media_preferences.include(prefs,1,total=3,video=True,result=result))
+        self.assertTrue(media_preferences.include(prefs,1,total=1,video=True,has_images=False,result=result))
         index_notice=result['preference_notice']
         restore=instagram_quality.install(result,prefs)
         try:

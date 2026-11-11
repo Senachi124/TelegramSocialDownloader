@@ -346,4 +346,4 @@ MEDIA_BOT_DATA/
 
 Telegram媒體使用有限response/read timeout及全域大型傳送semaphore；結果不明的收據不自動重送。GET／HEAD／Range存取會檢查capability、2小時到期、使用者允許名單及媒體路徑；網址服務未設定時超限檔保留本機，不能當成已交付。
 
-Instagram「指定連結中的圖片」以每條URL的 `img_index` 取得原輪播位置，不使用設定中的全域圖片序號。手動序號只用於IG限時動態；TikTok只有全部貼文／全部限時動態，舊selected偏好讀取時轉為相應all模式。
+Instagram「指定連結中的圖片」以每條URL的 `img_index` 取得原輪播位置，不使用設定中的全域圖片序號。IG限時動態一律下載全部可存取內容，不提供手動序號；舊stories_selected偏好讀取時轉為stories_all。TikTok只有全部貼文／全部限時動態，舊selected偏好讀取時轉為相應all模式。

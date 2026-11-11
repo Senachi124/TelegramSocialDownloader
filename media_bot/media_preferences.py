@@ -11,8 +11,10 @@ def effective(preferences,url,mode,*,platform='instagram',result=None):
         if selected.get('content') in ('post_selected','stories_selected'):
             selected['content']=selected['content'].replace('_selected','_all')
         return selected
+    if platform=='instagram':
+        selected.pop('indices',None)
+        if selected.get('content')=='stories_selected':selected['content']='stories_all'
     if platform!='instagram' or selected.get('content')!='post_images':return selected
-    selected.pop('indices',None)
     try:
         parsed=urlsplit(url)
         values=parse_qs(parsed.query,keep_blank_values=True).get('img_index',[])

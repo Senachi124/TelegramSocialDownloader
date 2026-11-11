@@ -1,6 +1,6 @@
 # 使用者流程、背景架構與資料庫
 
-本文對照目前的 [worker.py](../media_bot/worker.py)、[core.py](../media_bot/core.py)、[inbox.py](../media_bot/inbox.py) 與 [instagram_policy.py](../media_bot/instagram_policy.py)，描述實際背景核心行為。平台名稱在資料庫中使用 `instagram`、`tiktok`、`twitter`，其中 `twitter` 即 X。
+本文對照目前的 [worker.py](../media_bot/worker.py)、[core.py](../media_bot/core.py)、[inbox.py](../media_bot/inbox.py) 與 [instagram_policy.py](../media_bot/instagram_policy.py)，描述實際背景核心行為。平台名稱在資料庫中使用 `instagram`、`tiktok`、`twitter` 和 `youtube`，其中 `twitter` 即 X。
 
 ## 1. User flow：從貼上連結到收到媒體
 
@@ -95,6 +95,7 @@ sequenceDiagram
 | --- | --- |
 | Instagram | `gallery_runner` → gallery-dl + `instagram_web_gallery`／`instagram_web_client`；`instagram_policy` 限制 API 請求。 |
 | TikTok 影片貼文 | `gallery_runner` → `yt_runner` → yt-dlp；優先 HTTPS 完整 H.264 MP4，沒有符合格式才使用原有直接下載備援。 |
+| YouTube 影片／Shorts | `core` 將單片網址統一為 watch URL → `gallery_runner` → `yt_runner` → yt-dlp。優先完整 H.264 MP4，其次在有 FFmpeg 時直接合併 H.264＋AAC，再備援完整 MP4／WebM；不重新編碼。獨立佇列、媒體配額及冷卻，不讀取 Cookie。 |
 | TikTok 照片／限時動態 | `gallery_runner` → gallery-dl + `tiktok` adapter。 |
 | X 貼文 | `gallery_runner` → `twitter_runner` → twscrape；媒體另由 HTTP 客戶端串流下載。 |
 
@@ -211,6 +212,8 @@ erDiagram
 ```
 
 ER 圖顯示應用使用的關聯；精確 nullable、default、UNIQUE 與 FK 定義以 [state-schema.sql](state-schema.sql) 為準。只有三條 `job → jobs.id` 關聯是真正資料庫外鍵。`telegram_inbox` 與 `jobs` 透過程式產生的 `update_key` 關聯，**沒有 FK**；`chat` 是 Telegram ID，沒有本機 users 表。`settings`、`media_budget` 亦沒有指向 jobs 的外鍵。
+
+YouTube 格式優先順序、stream copy 與驗證方式見 [YouTube 下載說明](youtube.md)。新增 `youtube` 平台值沿用現有 TEXT 欄位，無資料庫遷移。
 
 ### jobs：每次下載請求的父工作
 

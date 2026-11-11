@@ -13,14 +13,15 @@ import socket
 import sqlite3
 import time
 from email.utils import parsedate_to_datetime
-from urllib.parse import urlsplit, urlunsplit, urljoin
+from urllib.parse import parse_qs, urlsplit, urlunsplit, urljoin
 
 from . import config
 
 DATA = config.data_dir()
 ACTIVE = ('choice','queued','running','cooldown','sending','paused')
 TWITTER_HOSTS = {'x.com','www.x.com','mobile.x.com','twitter.com','www.twitter.com','mobile.twitter.com','m.twitter.com'}
-HOSTS = TWITTER_HOSTS | {'instagram.com','www.instagram.com','m.instagram.com','tiktok.com','www.tiktok.com','m.tiktok.com','vm.tiktok.com','vt.tiktok.com'}
+YOUTUBE_HOSTS = {'youtube.com','www.youtube.com','m.youtube.com','youtu.be'}
+HOSTS = TWITTER_HOSTS | YOUTUBE_HOSTS | {'instagram.com','www.instagram.com','m.instagram.com','tiktok.com','www.tiktok.com','m.tiktok.com','vm.tiktok.com','vt.tiktok.com'}
 
 class Connection(sqlite3.Connection):
     def __exit__(self,*args):
@@ -141,11 +142,23 @@ def validate_url(url):
     p=urlsplit(url)
     if (p.scheme!='https' or p.hostname not in HOSTS or p.username or p.password
         or p.port not in (None,443) or any(ord(x)<33 for x in url) or len(url)>2048):
-        raise ValueError('只接受 Instagram／TikTok／Twitter (X) HTTPS 連結')
+        raise ValueError('只接受 Instagram／TikTok／Twitter (X)／YouTube HTTPS 連結')
+    if p.hostname in YOUTUBE_HOSTS:
+        if p.hostname!='youtu.be' and p.path=='/watch':
+            ids=parse_qs(p.query,keep_blank_values=True).get('v',[])
+            video_id=ids[0] if len(ids)==1 else ''
+        else:
+            prefix='/' if p.hostname=='youtu.be' else '/shorts/'
+            match=re.fullmatch(prefix+r'([A-Za-z0-9_-]{11})/?',p.path)
+            video_id=match[1] if match else ''
+        if not re.fullmatch(r'[A-Za-z0-9_-]{11}',video_id):
+            raise ValueError('請貼上單條 YouTube 影片或 Shorts 連結')
+        return 'https://www.youtube.com/watch?v='+video_id
     return urlunsplit(('https',p.hostname,p.path or '/',p.query,''))
 
 def classify(url):
     p=urlsplit(validate_url(url)); path=p.path.strip('/')
+    if p.hostname in YOUTUBE_HOSTS:return 'youtube','post'
     if p.hostname in TWITTER_HOSTS:
         from .twitter import post_id
         post_id(url)

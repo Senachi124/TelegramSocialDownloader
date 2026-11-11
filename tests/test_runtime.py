@@ -59,6 +59,74 @@ class RuntimeTests(unittest.TestCase):
                               ('https://x.com/example/status/123', ('twitter', 'post'))]:
             with self.subTest(url=url): self.assertEqual(c.classify(url), expected)
 
+    def test_youtube_links_queue_a_single_canonical_video(self):
+        base = 'https://www.youtube.com/watch?v=Abc123_X-yZ'
+        urls = (base + '&list=PL123',
+                'https://m.youtube.com/shorts/Abc123_X-yZ?si=share',
+                'https://youtu.be/Abc123_X-yZ?t=30')
+        for i, url in enumerate(urls):
+            with self.subTest(url=url):
+                job = self.job(url, key=f'youtube-{i}')
+                self.assertEqual((job['url'], job['platform'], job['mode'], job['state']),
+                                 (base, 'youtube', 'post', 'queued'))
+        batch = c.enqueue_batch('mixed', 123, [urls[1], 'https://x.com/example/status/123'], 10)
+        with c.db() as db:
+            items = db.execute('SELECT platform, mode FROM batch_items WHERE job=? ORDER BY position',
+                               (batch,)).fetchall()
+        self.assertEqual(list(map(tuple, items)), [('youtube', 'post'), ('twitter', 'post')])
+
+    def test_youtube_runner_delivers_only_final_file_and_reserves_youtube_quota(self):
+        import json
+        from io import StringIO
+        from media_bot import gallery_runner, yt_runner
+        url = 'https://www.youtube.com/watch?v=Abc123_X-yZ'
+        final = self.root / 'Abc123_X-yZ_00_.mp4'
+        def extract(downloader, url, **kwargs):
+            self.assertEqual(kwargs['ie_key'], 'Youtube')
+            self.assertTrue(downloader.params['noplaylist'])
+            self.assertFalse(list(downloader.cookiejar))
+            for name in ('Abc123_X-yZ_00_.f137.mp4', 'Abc123_X-yZ_00_.f140.m4a'):
+                downloader.dl(str(self.root / name), {})
+                (self.root / name).write_bytes(b'fixture-stream')
+            final.write_bytes(b'fixture-video')
+            (self.root / 'Abc123_X-yZ_00_.webm').write_bytes(b'older-download')
+            return {'id': 'Abc123_X-yZ', 'requested_downloads': [{'filepath': str(final)}]}
+        payload = {'platform': 'youtube', 'mode': 'post', 'root': str(self.root),
+                   'url': url, 'cookies': {}}
+        with patch('sys.stdin', StringIO(json.dumps(payload))), \
+                patch.object(yt_runner.YoutubeDL, 'extract_info', extract), \
+                patch.object(yt_runner.YoutubeDL, 'dl'):
+            gallery_runner.main()
+        result = json.loads((self.root / 'result.json').read_text())
+        self.assertEqual((result['code'], result['media_attempts']), (0, 1))
+        self.assertEqual([f['name'] for f in result['files']], [final.name])
+        with c.db() as db:
+            self.assertEqual([row['platform'] for row in db.execute('SELECT platform FROM media_budget')],
+                             ['youtube'])
+
+    def test_youtube_http_429_sets_only_youtube_cooldown(self):
+        from media_bot import yt_runner
+        response = Mock(status=429, headers={'Retry-After': '1200'})
+        def extract(downloader, url, **kwargs):
+            downloader.urlopen(url)
+        with patch.object(yt_runner.YoutubeDL, 'extract_info', extract), \
+                patch.object(yt_runner.YoutubeDL, 'urlopen', return_value=response):
+            result = yt_runner.run({'platform': 'youtube', 'root': str(self.root),
+                                    'url': 'https://youtu.be/Abc123_X-yZ'})
+        self.assertEqual((result['code'], result['wait_reason'], result['files']), (1, 'platform', []))
+        self.assertGreaterEqual(result['retry_at'], result['started'] + 1200)
+        self.assertEqual(c.get_setting('youtube_cooldown'), result['retry_at'])
+        self.assertIsNone(c.get_setting('tiktok_cooldown'))
+
+    def test_youtube_non_video_links_are_rejected(self):
+        for url in ('https://www.youtube.com/playlist?list=PL123',
+                    'https://www.youtube.com/@example/shorts',
+                    'https://youtu.be/Abc123_X-yZ/extra',
+                    'https://www.youtube.com/watch?v=Abc123_X-yZ&v=Zyx123_X-yZ',
+                    'https://www.youtube.com.evil.test/watch?v=Abc123_X-yZ'):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                self.job(url)
+
     def test_rejects_unrequested_and_unsafe_hosts(self):
         for url in ('https://threads.net/@example/post/abc', 'http://x.com/example/status/123',
                     'https://x.com.evil.test/example/status/123', 'https://user:password@x.com/example/status/123',

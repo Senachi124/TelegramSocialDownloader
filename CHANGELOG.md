@@ -12,10 +12,17 @@
 
 ### Added
 
+- 支援公開 YouTube 影片、Shorts 和 youtu.be 分享連結，可單獨或混合批次下載。YouTube 需要 Deno 供 yt-dlp 使用，建議安裝 FFmpeg；不需 Cookie 或資料庫遷移，沿用 49 MiB 傳送門檻。
+- 新增需求及進度文件，記錄 YouTube 支援範圍和驗證結果。
+
 - 新增完整架構文件：使用者流程、背景處理時序、工作／檔案狀態、兩個 SQLite 資料庫的 ER 圖、欄位字典及參考 SQL，讓開發者可核對實際資料關聯與恢復行為。
 - 新增根目錄 `AGENTS.md` 與本變更紀錄，規定程式、依賴、設定介面、測試及文件修改須在同一 commit 更新 changelog，並定義分類與版本整理方式。
 
 ### Changed
+
+- 記錄已知風險 YT-001：YouTube 分段下載可能跳過 HTTP 404 片段而回報成功並交付缺段檔案；依使用者決定保留現行行為，修復另行追蹤，詳見 `docs/youtube.md`。
+
+- YouTube 優先下載已有畫面與聲音的 H.264 MP4；沒有時才在 FFmpeg 可用下直接合併 H.264＋AAC（stream copy，不重新壓制），最後備援其他完整 MP4／WebM。新增格式選擇、無 FFmpeg 與合併參數回歸，以及 `docs/youtube.md`；整合 main 的 TikTok H.264 與 partial 安全續傳修正，無資料庫遷移。
 
 - README 加入架構、SQL、維護規則及 changelog 入口與逐檔說明，方便開發者找到對應文件。
 

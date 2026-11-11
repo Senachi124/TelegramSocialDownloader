@@ -1,10 +1,11 @@
 # Telegram Social Downloader
 
-獨立背景服務核心：接收 Telegram 私人訊息中的 Instagram、TikTok、Twitter／X 連結，下載媒體並傳回同一個對話。
+獨立背景服務核心：接收 Telegram 私人訊息中的 Instagram、TikTok、Twitter／X 和 YouTube 連結，下載媒體並傳回同一個對話。
 
 - Instagram 貼文、Reels、限時動態；貼文可選擇下載內容或作者限時動態。
 - TikTok 影片、照片貼文及平台允許存取的限時動態；支援分享短連結。
 - Twitter／X 單篇貼文的圖片、影片及動態圖片。
+- YouTube 公開影片及 Shorts：接受 `youtube.com/watch?v=…`、`youtube.com/shorts/…` 和 `youtu.be/…`。可以混入批次；有播放清單參數時只下載該影片。不支援播放清單、頻道、進行中直播或需登入的內容。
 - 每則訊息最多 50 個連結、SQLite 持久佇列、平台限流冷卻及下載續作。
 - 串流上傳、圖片／影片相簿和逐檔傳送收據。傳送結果不明時保留檔案，不自動重送。
 
@@ -13,6 +14,8 @@
 ## 安裝與啟動
 
 需要 Linux、Python 3.11+，建議安裝 `ffprobe` 以取得影片尺寸；缺少時會以原始文件傳送影片。
+
+YouTube 請將 [Deno](https://github.com/yt-dlp/yt-dlp/wiki/EJS) 加入 bot 程序的 `PATH`；既有 `yt-dlp[default]` 依賴已包括 EJS。優先下載已有畫面與聲音的 H.264 MP4；沒有時，若有 FFmpeg，使用 H.264＋AAC 原始串流直接合併（stream copy，不重新壓制）。最後備援為其他完整 MP4／WebM；沒有 FFmpeg 時跳過分離串流。YouTube 不需要 Cookie 設定。完整格式順序、CPU／檔案大小取捨見 [YouTube 下載說明](docs/youtube.md)。
 
 ```sh
 python3 -m venv .venv
@@ -60,21 +63,21 @@ Cookie 檔案格式是名稱到字串值的 JSON 物件。Token／Cookie 檔案�
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-測試使用合成資料及模擬網路回應，不需要真實 Bot token、Cookie 或帳號。沒有進行真實 Telegram 發送或平台下載驗收。
+測試使用合成資料及模擬網路回應，不需要真實 Bot token、Cookie 或帳號。這套離線測試不會發送 Telegram 訊息或下載真實平台媒體；另外的實站驗證記錄見 [PROGRESS.md](PROGRESS.md)。
 
 
 ## 開發者導覽
 
 使用者流程、背景時序、工作／檔案狀態圖及完整資料字典，見 [架構與資料庫文件](docs/architecture.md)。兩個 SQLite 資料庫的參考 DDL 分別在 [工作資料庫](docs/state-schema.sql) 與 [Instagram 限速資料庫](docs/instagram-rate-schema.sql)。
 
-這個 repository 展示三平台下載器的實際程式流程、模組分工、輸入設定、持久化資料結構，以及下載／傳送失敗時的處理規則。可從 `__main__.py` 開始看啟動，再看 `worker.py` 的協調流程，接著閱讀 `core.py` 和各平台 runner。
+這個 repository 展示四個平台下載器的實際程式流程、模組分工、輸入設定、持久化資料結構，以及下載／傳送失敗時的處理規則。可從 `__main__.py` 開始看啟動，再看 `worker.py` 的協調流程，接著閱讀 `core.py` 和各平台 runner。
 
 ### 一則訊息如何變成下載結果
 
 1. `__main__.py` 解析啟動參數，`config.py` 驗證外部設定，再啟動 `worker.main()`。
 2. `worker.poll()` 向 Telegram 取得訊息；`inbox.store()` 同時保存合資格的私人訊息與輪詢 offset。不同對話可並行，同一對話保持處理順序。
 3. `worker.handle_update()` 處理連結及貼文／限時動態選擇；`core.py` 驗證網址並寫入單筆或批次工作。
-4. 各平台 worker 挑選工作，透過子程序執行 `gallery_runner.py`。TikTok 影片轉交 `yt_runner.py`，X 貼文轉交 `twitter_runner.py`；Instagram 與其他 TikTok 內容使用 gallery-dl。
+4. 各平台 worker 挑選工作，透過子程序執行 `gallery_runner.py`。TikTok 影片和 YouTube 影片轉交 `yt_runner.py`，X 貼文轉交 `twitter_runner.py`；Instagram 與其他 TikTok 內容使用 gallery-dl。
 5. Runner 保存媒體與結果；`worker.deliver()` 傳送相簿、影片、圖片或文件。`video.py` 提供影片尺寸與時長，SQLite 保存逐檔 Telegram 收據。
 6. 平台限流會記錄冷卻時間；傳送結果不明時保留檔案以避免自動重送。維護迴圈清理符合保留期限的已完成媒體與已處理收件紀錄。
 
@@ -89,6 +92,7 @@ TikTok 續傳以每個輸出檔旁的 `.format.json` 記錄格式識別與影音
 | 檔案 | 內容與用途 |
 | --- | --- |
 | [README.md](README.md) | 功能、安裝方式、環境變數、儲存與錯誤處理規則、測試命令，以及本份逐檔導覽。 |
+| [REQUIREMENTS.md](REQUIREMENTS.md)／[PROGRESS.md](PROGRESS.md) | 需求、驗收條件及目前工作交接。 |
 | [AGENTS.md](AGENTS.md) | 全 repository 的開發維護規則，包含必須同步更新 changelog 的要求、紀錄分類、版本整理與提交前檢查。 |
 | [CHANGELOG.md](CHANGELOG.md) | 初始版本及尚未發布的功能、行為和文件變更紀錄，說明對使用者或開發者的影響。 |
 | [.gitignore](.gitignore) | Git 忽略規則，涵蓋環境檔、Cookie／token 檔名、資料庫、媒體、暫存、虛擬環境與建置產物。 |
@@ -123,7 +127,7 @@ TikTok 續傳以每個輸出檔旁的 `.format.json` 記錄格式識別與影音
 | 檔案 | 內容與用途 |
 | --- | --- |
 | [media_bot/tiktok.py](media_bot/tiktok.py) | TikTok 影片／照片／限時動態分流、gallery-dl 選項、Story 目標和空清單判定、重試退避及使用者錯誤訊息。 |
-| [media_bot/yt_runner.py](media_bot/yt_runner.py) | 使用 yt-dlp 下載 TikTok 影片；優先完整 H.264 MP4，保留直接下載格式備援，套用 Cookie、路徑與媒體配額檢查，追蹤 HTTP 限流並輸出標準下載結果。 |
+| [media_bot/yt_runner.py](media_bot/yt_runner.py) | 使用 yt-dlp 下載 TikTok 和 YouTube 影片；優先完整 H.264 MP4，各自套用格式備援、路徑、媒體配額及 HTTP 冷卻規則。Cookie 僅用於 TikTok；YouTube 可在沒有完整 H.264 時直接合併 H.264／AAC，不轉碼。 |
 | [media_bot/twitter.py](media_bot/twitter.py) | X 貼文 URL／ID 驗證、Cookie 格式解析輔助函式、原圖與最高 bitrate MP4 選擇，以及錯誤訊息分類。外部啟動設定仍使用 `config.py` 的 JSON Cookie 物件格式。 |
 | [media_bot/twitter_runner.py](media_bot/twitter_runner.py) | 以 twscrape 查詢 X 貼文，使用記憶體中的登入資料，從媒體 CDN 串流下載；以 SHA-256 收據驗證已有檔案，保存限流狀態並停用 provider dump／telemetry。 |
 

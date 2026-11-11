@@ -243,6 +243,88 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result['code'], 1)
         self.assertEqual(result['media_attempts'], 0)
 
+    def select_youtube_formats(self, formats, ffmpeg=True):
+        """Real selection/merger logic, synthetic provider/files and no network."""
+        from yt_dlp.extractor.youtube import YoutubeIE
+        from yt_dlp.postprocessor.ffmpeg import FFmpegMergerPP
+        from unittest.mock import PropertyMock
+        selected, merge_args = [], []
+        def extract(extractor, url):
+            return {'id': 'Abc123_X-yZ', 'title': 'synthetic', 'formats': formats}
+        def download(downloader, name, info, subtitle=False, test=False):
+            selected.append(info['format_id'])
+            Path(name).write_bytes(b'synthetic-video')
+            return True, True
+        def merge(processor, inputs, output, args, **kwargs):
+            merge_args.append(args)
+            Path(output).write_bytes(b'synthetic-merged-video')
+        with patch.object(YoutubeIE, '_real_extract', extract), \
+                patch.object(self.yt.YoutubeDL, 'dl', download), \
+                patch.object(self.yt.YoutubeDL, 'urlopen', side_effect=AssertionError('Unexpected network')), \
+                patch.object(self.yt.shutil, 'which', return_value='/synthetic/ffmpeg' if ffmpeg else None), \
+                patch.object(FFmpegMergerPP, 'available', new_callable=PropertyMock, return_value=ffmpeg), \
+                patch.object(FFmpegMergerPP, 'can_merge', return_value=ffmpeg), \
+                patch.object(FFmpegMergerPP, 'run_ffmpeg_multiple_files', merge):
+            result = self.yt.run({'platform': 'youtube', 'root': str(self.root / 'youtube'),
+                                  'url': 'https://youtu.be/Abc123_X-yZ'})
+        return selected, merge_args, result
+
+    def test_youtube_prefers_complete_h264_over_separate_and_hevc(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('avc-complete', codec='avc1.42001e', height=360),
+            self.tiktok_format('hevc-complete', codec='h265'),
+            self.tiktok_format('avc-video', codec='avc1.64001f', acodec='none'),
+            self.tiktok_format('aac-audio', vcodec='none', acodec='mp4a.40.2', ext='m4a'),
+        ])
+        self.assertEqual(selected, ['avc-complete'])
+        self.assertEqual(merges, [])
+        self.assertEqual((result['code'], result['media_attempts']), (0, 1))
+        self.assertEqual(len(result['files']), 1)
+
+    def test_youtube_h264_separate_fallback_copies_streams_without_encoding(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('hevc-complete', codec='h265'),
+            self.tiktok_format('avc-video', codec='h264', acodec='none'),
+            self.tiktok_format('aac-audio', vcodec='none', acodec='aac', ext='m4a'),
+        ])
+        self.assertEqual(selected, ['avc-video', 'aac-audio'])
+        self.assertEqual(merges, [['-c', 'copy', '-map', '0:v:0', '-map', '1:a:0']])
+        self.assertEqual((result['code'], result['media_attempts']), (0, 1))
+        self.assertEqual([f['name'] for f in result['files']], ['Abc123_X-yZ_00_.mp4'])
+
+    def test_youtube_without_ffmpeg_keeps_complete_h264_preference(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('avc-complete', codec='h264', height=360),
+            self.tiktok_format('hevc-complete', codec='h265'),
+        ], ffmpeg=False)
+        self.assertEqual(selected, ['avc-complete'])
+        self.assertEqual((merges, result['code']), ([], 0))
+
+    def test_youtube_without_ffmpeg_uses_complete_fallback_not_silent_h264(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('hevc-complete', codec='h265'),
+            self.tiktok_format('avc-video', codec='avc1.64001f', acodec='none'),
+            self.tiktok_format('aac-audio', vcodec='none', ext='m4a'),
+        ], ffmpeg=False)
+        self.assertEqual(selected, ['hevc-complete'])
+        self.assertEqual((merges, result['code']), ([], 0))
+
+    def test_youtube_without_ffmpeg_rejects_separate_only_formats(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('avc-video', acodec='none'),
+            self.tiktok_format('aac-audio', vcodec='none', ext='m4a'),
+        ], ffmpeg=False)
+        self.assertEqual((selected, merges, result['files']), ([], [], []))
+        self.assertEqual((result['code'], result['media_attempts']), (1, 0))
+
+    def test_youtube_webm_fallback_remains_available(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('webm-complete', codec='vp9', acodec='opus', ext='webm'),
+        ])
+        self.assertEqual(selected, ['webm-complete'])
+        self.assertEqual((merges, result['code']), ([], 0))
+        self.assertEqual(result['files'][0]['name'], 'Abc123_X-yZ_00_.webm')
+
     def transfer_tiktok(self, codec='h264', format_id='avc', quota_blocked=False):
         """Run a real HTTP downloader against a server that supports Range."""
         from yt_dlp.extractor.tiktok import TikTokIE

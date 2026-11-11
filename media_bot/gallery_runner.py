@@ -10,16 +10,16 @@ from . import core as c
 class StopDownload(BaseException):pass
 
 def main():
-    import requests
-    from gallery_dl import config,job
     from . import instagram,tiktok
     p=json.load(sys.stdin);platform=p.get('platform','tiktok')
     if platform=='twitter':
         from .twitter_runner import run
         run(p);return
-    if tiktok.uses_yt_dlp(p):
+    if platform=='youtube' or tiktok.uses_yt_dlp(p):
         from .yt_runner import run
         run(p);return
+    import requests
+    from gallery_dl import config,job
     adapter=instagram if platform=='instagram' else tiktok
     root=Path(p['root']);root.mkdir(parents=True,exist_ok=True)
     result={'code':1,'retry_at':0,'auth_required':False,'files':[],

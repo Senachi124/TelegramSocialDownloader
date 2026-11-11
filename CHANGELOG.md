@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- TikTok 續傳加入不含媒體網址或憑證的格式紀錄，避免切換 H.264 後沿用舊 HEVC `.part` 而混合兩種格式的位元組。格式不同或缺少紀錄時保留舊 partial 並重新下載；同格式保留 Range 續傳，配額阻擋與既有完整檔保持不變。新增本機 HTTP Range 實測回歸及 partial／紀錄符號連結拒絕測試。
+- TikTok 影片改為優先選已有畫面與聲音的 HTTPS H.264 MP4（含 `avc1` 編碼名稱），降低直接傳送 HEVC 影片造成的裝置播放相容性風險；保留原有直接下載備援，不轉碼、不設定解析度上限、不替換既有完成檔。H.264 檔案可能較大，仍套用 49 MiB 傳送門檻。
+- 新增使用真實 yt-dlp 選擇流程的離線回歸，涵蓋 H.264／HEVC 優先順序、`avc1` 與最佳 H.264 選擇、完整影音要求、HTTP 備援及拒絕 HLS。
+
 ### Added
 
 - 支援公開 YouTube 影片、Shorts 和 youtu.be 分享連結，可單獨或混合批次下載。YouTube 需要 Deno 供 yt-dlp 使用，建議安裝 FFmpeg；不需 Cookie 或資料庫遷移，沿用 49 MiB 傳送門檻。
@@ -13,6 +19,8 @@
 - 新增根目錄 `AGENTS.md` 與本變更紀錄，規定程式、依賴、設定介面、測試及文件修改須在同一 commit 更新 changelog，並定義分類與版本整理方式。
 
 ### Changed
+
+- YouTube 優先下載已有畫面與聲音的 H.264 MP4；沒有時才在 FFmpeg 可用下直接合併 H.264＋AAC（stream copy，不重新壓制），最後備援其他完整 MP4／WebM。新增格式選擇、無 FFmpeg 與合併參數回歸，以及 `docs/youtube.md`；整合 main 的 TikTok H.264 與 partial 安全續傳修正，無資料庫遷移。
 
 - README 加入架構、SQL、維護規則及 changelog 入口與逐檔說明，方便開發者找到對應文件。
 

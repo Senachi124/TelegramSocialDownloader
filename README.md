@@ -15,7 +15,7 @@
 
 需要 Linux、Python 3.11+，建議安裝 `ffprobe` 以取得影片尺寸；缺少時會以原始文件傳送影片。
 
-YouTube 請將 [Deno](https://github.com/yt-dlp/yt-dlp/wiki/EJS) 加入 bot 程序的 `PATH`；既有 `yt-dlp[default]` 依賴已包括 EJS。建議同時安裝 FFmpeg 以合併獨立的影片和音訊串流；沒有 FFmpeg 時只選可用的單一影音串流。YouTube 不需要 Cookie 設定。
+YouTube 請將 [Deno](https://github.com/yt-dlp/yt-dlp/wiki/EJS) 加入 bot 程序的 `PATH`；既有 `yt-dlp[default]` 依賴已包括 EJS。優先下載已有畫面與聲音的 H.264 MP4；沒有時，若有 FFmpeg，使用 H.264＋AAC 原始串流直接合併（stream copy，不重新壓制）。最後備援為其他完整 MP4／WebM；沒有 FFmpeg 時跳過分離串流。YouTube 不需要 Cookie 設定。完整格式順序、CPU／檔案大小取捨見 [YouTube 下載說明](docs/youtube.md)。
 
 ```sh
 python3 -m venv .venv
@@ -81,6 +81,10 @@ Cookie 檔案格式是名稱到字串值的 JSON 物件。Token／Cookie 檔案�
 5. Runner 保存媒體與結果；`worker.deliver()` 傳送相簿、影片、圖片或文件。`video.py` 提供影片尺寸與時長，SQLite 保存逐檔 Telegram 收據。
 6. 平台限流會記錄冷卻時間；傳送結果不明時保留檔案以避免自動重送。維護迴圈清理符合保留期限的已完成媒體與已處理收件紀錄。
 
+TikTok 影片優先下載已有畫面與聲音的 H.264 MP4（HTTPS），在這些格式中選擇最佳可用版本；沒有符合格式時，依序退回其他 HTTPS MP4、其他 HTTPS 完整影音及 HTTP 完整影音。不合併分離影音、不重新編碼，也不固定限制為 720p。相容性優先可能選到較低解析度或較大的檔案；49 MiB 傳送門檻仍適用，既有完成檔不會自動重新下載。
+
+TikTok 續傳以每個輸出檔旁的 `.format.json` 記錄格式識別與影音規格，不記錄媒體網址或憑證。只有格式紀錄相符才續傳 `.part`；舊版沒有紀錄或格式改變時，先將未完成內容保留為同目錄的 `.part.preserved-<隨機識別碼>`，再從頭下載，避免把 HEVC 前段與 H.264 後段拼接。保留檔不會傳送，也不由已完成媒體清理自動刪除；配額阻擋時不改動續傳資料。
+
 輸入是 Telegram 訊息、網址及外部設定；輸出是 Telegram 媒體訊息、本機媒體、下載結果與 SQLite 狀態。執行時主要資料包含 `state.sqlite3`、`instagram-api-rate.sqlite3`、`media/` 及 `tmp/`，全部在明確指定的資料目錄下建立。
 
 ### 根目錄檔案
@@ -123,7 +127,7 @@ Cookie 檔案格式是名稱到字串值的 JSON 物件。Token／Cookie 檔案�
 | 檔案 | 內容與用途 |
 | --- | --- |
 | [media_bot/tiktok.py](media_bot/tiktok.py) | TikTok 影片／照片／限時動態分流、gallery-dl 選項、Story 目標和空清單判定、重試退避及使用者錯誤訊息。 |
-| [media_bot/yt_runner.py](media_bot/yt_runner.py) | 使用 yt-dlp 下載 TikTok 和 YouTube 影片；各自套用格式、路徑、媒體配額及 HTTP 冷卻規則。Cookie 僅用於 TikTok。 |
+| [media_bot/yt_runner.py](media_bot/yt_runner.py) | 使用 yt-dlp 下載 TikTok 和 YouTube 影片；優先完整 H.264 MP4，各自套用格式備援、路徑、媒體配額及 HTTP 冷卻規則。Cookie 僅用於 TikTok；YouTube 可在沒有完整 H.264 時直接合併 H.264／AAC，不轉碼。 |
 | [media_bot/twitter.py](media_bot/twitter.py) | X 貼文 URL／ID 驗證、Cookie 格式解析輔助函式、原圖與最高 bitrate MP4 選擇，以及錯誤訊息分類。外部啟動設定仍使用 `config.py` 的 JSON Cookie 物件格式。 |
 | [media_bot/twitter_runner.py](media_bot/twitter_runner.py) | 以 twscrape 查詢 X 貼文，使用記憶體中的登入資料，從媒體 CDN 串流下載；以 SHA-256 收據驗證已有檔案，保存限流狀態並停用 provider dump／telemetry。 |
 
@@ -133,7 +137,7 @@ Cookie 檔案格式是名稱到字串值的 JSON 物件。Token／Cookie 檔案�
 | --- | --- |
 | [tests/test_config.py](tests/test_config.py) | 外部設定與靜態允許名單、資料目錄、Cookie 檔案權限與位置、符號連結拒絕、錯誤資訊遮蔽及暫存目錄測試。 |
 | [tests/test_runtime.py](tests/test_runtime.py) | 核心流程回歸：URL 與使用權限、去重入列、批次、持久收件匣與配額、Telegram 收據、相簿、傳送結果不明、大檔保留、空間保護和下載子程序停止。 |
-| [tests/test_adapters.py](tests/test_adapters.py) | 平台 adapter／runner 測試：TikTok 分流與選項、X 媒體選擇、CDN 限制、checksum 收據、配額、檔案保留及敏感錯誤資訊遮蔽。 |
+| [tests/test_adapters.py](tests/test_adapters.py) | 平台 adapter／runner 測試：TikTok 分流、真實 yt-dlp 格式選擇與備援、X 媒體選擇、CDN 限制、checksum 收據、配額、檔案保留及敏感錯誤資訊遮蔽。 |
 | [tests/test_instagram_stories_target.py](tests/test_instagram_stories_target.py) | 貼文轉限時動態目標的測試；驗證作者解析、extractor 初始化、iterator／session 關閉及失敗路徑。 |
 | [tests/test_instagram_timeline.py](tests/test_instagram_timeline.py) | timeline 分頁與解析測試；涵蓋 cursor／頁面重複、資料格式錯誤、空清單、頁數上限、輪播 ID 與可忽略的選填欄位錯誤。 |
 | [tests/test_instagram_transport.py](tests/test_instagram_transport.py) | Instagram HTTP／GraphQL transport 測試；涵蓋 429 冷卻、登入與驗證挑戰、重新導向、目標限制、請求預算和 session 資料使用。 |

@@ -94,10 +94,14 @@ sequenceDiagram
 | 內容類型 | 實際引擎與相關模組 |
 | --- | --- |
 | Instagram | `gallery_runner` → gallery-dl + `instagram_web_gallery`／`instagram_web_client`；`instagram_policy` 限制 API 請求。 |
-| TikTok 影片貼文 | `gallery_runner` → `yt_runner` → yt-dlp。 |
-| YouTube 影片／Shorts | `core` 將單片網址統一為 watch URL → `gallery_runner` → `yt_runner` → yt-dlp。獨立佇列、媒體配額及冷卻，不讀取 Cookie。 |
+| TikTok 影片貼文 | `gallery_runner` → `yt_runner` → yt-dlp；優先 HTTPS 完整 H.264 MP4，沒有符合格式才使用原有直接下載備援。 |
+| YouTube 影片／Shorts | `core` 將單片網址統一為 watch URL → `gallery_runner` → `yt_runner` → yt-dlp。優先完整 H.264 MP4，其次在有 FFmpeg 時直接合併 H.264＋AAC，再備援完整 MP4／WebM；不重新編碼。獨立佇列、媒體配額及冷卻，不讀取 Cookie。 |
 | TikTok 照片／限時動態 | `gallery_runner` → gallery-dl + `tiktok` adapter。 |
 | X 貼文 | `gallery_runner` → `twitter_runner` → twscrape；媒體另由 HTTP 客戶端串流下載。 |
+
+TikTok 的 H.264／`avc1` 偏好優先於解析度，再於符合格式中選擇最佳版本；沒有 H.264 完整影音時，依序選其他 HTTPS MP4、其他 HTTPS 完整影音、HTTP 完整影音。這條路徑不合併、不轉碼、不強制 720p，亦不保證檔案低於 49 MiB。既有下載與傳送檢查點保持原樣，不自動替換已完成檔案。
+
+進入 TikTok 媒體下載前，runner 先取得配額，再核對輸出旁的 `.format.json`（影片／格式 ID、編碼、容器、尺寸、幀率及大小；不含 URL／Cookie）。紀錄相符才使用 HTTP Range 續傳；紀錄缺失、損壞或不同時，將原 `.part` 保留到同目錄唯一的 `.part.preserved-*` 名稱，原子更新格式紀錄後從頭下載。保留檔不列入傳送或已完成媒體清理；已完成檔直接沿用，配額阻擋時不修改 partial／marker。符號連結或非一般檔案的 partial／marker 會拒絕處理。
 
 ## 3. 工作與檔案狀態
 
@@ -208,6 +212,8 @@ erDiagram
 ```
 
 ER 圖顯示應用使用的關聯；精確 nullable、default、UNIQUE 與 FK 定義以 [state-schema.sql](state-schema.sql) 為準。只有三條 `job → jobs.id` 關聯是真正資料庫外鍵。`telegram_inbox` 與 `jobs` 透過程式產生的 `update_key` 關聯，**沒有 FK**；`chat` 是 Telegram ID，沒有本機 users 表。`settings`、`media_budget` 亦沒有指向 jobs 的外鍵。
+
+YouTube 格式優先順序、stream copy 與驗證方式見 [YouTube 下載說明](youtube.md)。新增 `youtube` 平台值沿用現有 TEXT 欄位，無資料庫遷移。
 
 ### jobs：每次下載請求的父工作
 

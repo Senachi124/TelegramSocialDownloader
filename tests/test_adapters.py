@@ -2,10 +2,12 @@
 import asyncio
 from contextlib import asynccontextmanager
 import hashlib
+import http.server
 import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -181,6 +183,270 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result['code'], 1)
         self.assertEqual(result['failure'], 'extractor_error')
         self.assertNotIn('SYNTHETIC_PRIVATE_VALUE', (self.root / 'result.json').read_text())
+
+    def select_tiktok_formats(self, formats):
+        """Exercise the runner and yt-dlp selection, replacing only provider I/O."""
+        from yt_dlp.extractor.tiktok import TikTokIE
+        selected = []
+        def extract(extractor, url):
+            return {'id': '123', 'title': 'synthetic', 'formats': formats}
+        def download(downloader, name, info, subtitle=False, test=False):
+            selected.append(info['format_id'])
+            Path(name).write_bytes(b'synthetic-video')
+            return True, True
+        with patch.object(TikTokIE, '_real_extract', extract), \
+                patch.object(self.yt.YoutubeDL, 'dl', download), \
+                patch.object(self.yt.YoutubeDL, 'urlopen', side_effect=AssertionError('Unexpected network')):
+            result = self.yt.run({'root': str(self.root / 'capture'),
+                                  'url': 'https://www.tiktok.com/@example/video/123', 'cookies': {}})
+        return selected, result
+
+    @staticmethod
+    def tiktok_format(name, codec='h264', height=720, protocol='https', **extra):
+        return {'format_id': name, 'url': f'https://example.test/{name}.mp4',
+                'ext': 'mp4', 'vcodec': codec, 'acodec': 'aac',
+                'height': height, 'width': round(height * 16 / 9),
+                'protocol': protocol, **extra}
+
+    def test_tiktok_prefers_h264_over_hevc_at_same_resolution(self):
+        selected, result = self.select_tiktok_formats([
+            self.tiktok_format('avc', tbr=2800), self.tiktok_format('hevc', codec='h265', tbr=1200)])
+        self.assertEqual(selected, ['avc'])
+        self.assertEqual((result['code'], result['media_attempts']), (0, 1))
+
+    def test_tiktok_selects_best_h264_and_accepts_avc1_alias(self):
+        selected, result = self.select_tiktok_formats([
+            self.tiktok_format('avc-low', height=360),
+            self.tiktok_format('avc-high', codec='avc1.64001f'),
+            self.tiktok_format('hevc-higher', codec='h265', height=1080)])
+        self.assertEqual(selected, ['avc-high'])
+        self.assertEqual(result['code'], 0)
+
+    def test_tiktok_falls_back_to_complete_hevc_without_h264_audio(self):
+        selected, result = self.select_tiktok_formats([
+            self.tiktok_format('silent-avc', acodec='none'),
+            self.tiktok_format('hevc', codec='h265')])
+        self.assertEqual(selected, ['hevc'])
+        self.assertEqual(result['code'], 0)
+
+    def test_tiktok_keeps_http_fallback(self):
+        selected, result = self.select_tiktok_formats([
+            self.tiktok_format('http-hevc', codec='h265', protocol='http',
+                               url='http://example.test/video.mp4')])
+        self.assertEqual(selected, ['http-hevc'])
+        self.assertEqual(result['code'], 0)
+
+    def test_tiktok_rejects_hls_even_when_h264(self):
+        selected, result = self.select_tiktok_formats([
+            self.tiktok_format('hls', protocol='m3u8_native')])
+        self.assertEqual(selected, [])
+        self.assertEqual(result['code'], 1)
+        self.assertEqual(result['media_attempts'], 0)
+
+    def select_youtube_formats(self, formats, ffmpeg=True):
+        """Real selection/merger logic, synthetic provider/files and no network."""
+        from yt_dlp.extractor.youtube import YoutubeIE
+        from yt_dlp.postprocessor.ffmpeg import FFmpegMergerPP
+        from unittest.mock import PropertyMock
+        selected, merge_args = [], []
+        def extract(extractor, url):
+            return {'id': 'Abc123_X-yZ', 'title': 'synthetic', 'formats': formats}
+        def download(downloader, name, info, subtitle=False, test=False):
+            selected.append(info['format_id'])
+            Path(name).write_bytes(b'synthetic-video')
+            return True, True
+        def merge(processor, inputs, output, args, **kwargs):
+            merge_args.append(args)
+            Path(output).write_bytes(b'synthetic-merged-video')
+        with patch.object(YoutubeIE, '_real_extract', extract), \
+                patch.object(self.yt.YoutubeDL, 'dl', download), \
+                patch.object(self.yt.YoutubeDL, 'urlopen', side_effect=AssertionError('Unexpected network')), \
+                patch.object(self.yt.shutil, 'which', return_value='/synthetic/ffmpeg' if ffmpeg else None), \
+                patch.object(FFmpegMergerPP, 'available', new_callable=PropertyMock, return_value=ffmpeg), \
+                patch.object(FFmpegMergerPP, 'can_merge', return_value=ffmpeg), \
+                patch.object(FFmpegMergerPP, 'run_ffmpeg_multiple_files', merge):
+            result = self.yt.run({'platform': 'youtube', 'root': str(self.root / 'youtube'),
+                                  'url': 'https://youtu.be/Abc123_X-yZ'})
+        return selected, merge_args, result
+
+    def test_youtube_prefers_complete_h264_over_separate_and_hevc(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('avc-complete', codec='avc1.42001e', height=360),
+            self.tiktok_format('hevc-complete', codec='h265'),
+            self.tiktok_format('avc-video', codec='avc1.64001f', acodec='none'),
+            self.tiktok_format('aac-audio', vcodec='none', acodec='mp4a.40.2', ext='m4a'),
+        ])
+        self.assertEqual(selected, ['avc-complete'])
+        self.assertEqual(merges, [])
+        self.assertEqual((result['code'], result['media_attempts']), (0, 1))
+        self.assertEqual(len(result['files']), 1)
+
+    def test_youtube_h264_separate_fallback_copies_streams_without_encoding(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('hevc-complete', codec='h265'),
+            self.tiktok_format('avc-video', codec='h264', acodec='none'),
+            self.tiktok_format('aac-audio', vcodec='none', acodec='aac', ext='m4a'),
+        ])
+        self.assertEqual(selected, ['avc-video', 'aac-audio'])
+        self.assertEqual(merges, [['-c', 'copy', '-map', '0:v:0', '-map', '1:a:0']])
+        self.assertEqual((result['code'], result['media_attempts']), (0, 1))
+        self.assertEqual([f['name'] for f in result['files']], ['Abc123_X-yZ_00_.mp4'])
+
+    def test_youtube_without_ffmpeg_keeps_complete_h264_preference(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('avc-complete', codec='h264', height=360),
+            self.tiktok_format('hevc-complete', codec='h265'),
+        ], ffmpeg=False)
+        self.assertEqual(selected, ['avc-complete'])
+        self.assertEqual((merges, result['code']), ([], 0))
+
+    def test_youtube_without_ffmpeg_uses_complete_fallback_not_silent_h264(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('hevc-complete', codec='h265'),
+            self.tiktok_format('avc-video', codec='avc1.64001f', acodec='none'),
+            self.tiktok_format('aac-audio', vcodec='none', ext='m4a'),
+        ], ffmpeg=False)
+        self.assertEqual(selected, ['hevc-complete'])
+        self.assertEqual((merges, result['code']), ([], 0))
+
+    def test_youtube_without_ffmpeg_rejects_separate_only_formats(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('avc-video', acodec='none'),
+            self.tiktok_format('aac-audio', vcodec='none', ext='m4a'),
+        ], ffmpeg=False)
+        self.assertEqual((selected, merges, result['files']), ([], [], []))
+        self.assertEqual((result['code'], result['media_attempts']), (1, 0))
+
+    def test_youtube_webm_fallback_remains_available(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('webm-complete', codec='vp9', acodec='opus', ext='webm'),
+        ])
+        self.assertEqual(selected, ['webm-complete'])
+        self.assertEqual((merges, result['code']), ([], 0))
+        self.assertEqual(result['files'][0]['name'], 'Abc123_X-yZ_00_.webm')
+
+    def transfer_tiktok(self, codec='h264', format_id='avc', quota_blocked=False):
+        """Run a real HTTP downloader against a server that supports Range."""
+        from yt_dlp.extractor.tiktok import TikTokIE
+        body = b'synthetic-complete-avc-video-' * 1024
+        ranges = []
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+            def do_GET(self):
+                header = self.headers.get('Range')
+                ranges.append(header)
+                offset = int(header.split('=')[1].split('-')[0]) if header else 0
+                self.send_response(206 if header else 200)
+                self.send_header('Content-Type', 'video/mp4')
+                self.send_header('Content-Length', str(len(body) - offset))
+                self.send_header('Accept-Ranges', 'bytes')
+                if header:
+                    self.send_header('Content-Range', f'bytes {offset}-{len(body)-1}/{len(body)}')
+                self.end_headers()
+                self.wfile.write(body[offset:])
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        info = {'id': '123', 'title': 'synthetic', 'formats': [self.tiktok_format(
+            format_id, codec=codec, protocol='http', filesize=len(body), fps=30,
+            url=f'http://127.0.0.1:{server.server_port}/video.mp4')]}
+        reserve = self.core.reserve_media
+        def budget(*args):
+            if quota_blocked:
+                raise self.core.RateLimited(1234)
+            return reserve(*args)
+        try:
+            with patch.object(TikTokIE, '_real_extract', lambda extractor, url: info), \
+                    patch.object(self.core, 'reserve_media', side_effect=budget):
+                result = self.yt.run({'root': str(self.root / 'capture'),
+                                      'url': 'https://www.tiktok.com/@example/video/123', 'cookies': {}})
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+        return result, ranges, body
+
+    def tiktok_partial(self, content=b'old-hevc-prefix'):
+        root = self.root / 'capture'
+        root.mkdir(exist_ok=True)
+        part = root / '123_00_.mp4.part'
+        part.write_bytes(content)
+        return part
+
+    def test_tiktok_legacy_partial_is_preserved_without_range_resume(self):
+        part = self.tiktok_partial()
+        result, ranges, body = self.transfer_tiktok()
+        self.assertEqual(result['code'], 0)
+        self.assertEqual(ranges, [None])
+        self.assertEqual(part.with_suffix('').read_bytes(), body)
+        preserved = list(part.parent.glob(part.name + '.preserved-*'))
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(preserved[0].read_bytes(), b'old-hevc-prefix')
+
+    def test_tiktok_changed_format_partial_is_preserved(self):
+        result, _, _ = self.transfer_tiktok(codec='h265', format_id='hevc')
+        self.assertEqual(result['code'], 0)
+        (self.root / 'capture/123_00_.mp4').unlink()
+        part = self.tiktok_partial()
+        result, ranges, body = self.transfer_tiktok()
+        self.assertEqual(result['code'], 0)
+        self.assertEqual(ranges, [None])
+        self.assertEqual(part.with_suffix('').read_bytes(), body)
+        self.assertEqual(next(part.parent.glob(part.name + '.preserved-*')).read_bytes(), b'old-hevc-prefix')
+        marker = (part.parent / '123_00_.mp4.format.json').read_text()
+        self.assertEqual(json.loads(marker)['format']['vcodec'], 'h264')
+        self.assertNotIn('http', marker)
+
+    def test_tiktok_same_format_partial_retains_http_range_resume(self):
+        result, _, body = self.transfer_tiktok()
+        self.assertEqual(result['code'], 0)
+        (self.root / 'capture/123_00_.mp4').unlink()
+        part = self.tiktok_partial(body[:1000])
+        result, ranges, _ = self.transfer_tiktok()
+        self.assertEqual(result['code'], 0)
+        self.assertEqual(ranges, ['bytes=1000-'])
+        self.assertEqual(part.with_suffix('').read_bytes(), body)
+        self.assertEqual(list(part.parent.glob(part.name + '.preserved-*')), [])
+
+    def test_tiktok_quota_block_keeps_partial_and_marker_untouched(self):
+        part = self.tiktok_partial()
+        marker = part.parent / '123_00_.mp4.format.json'
+        marker.write_text('{"old":true}')
+        result, ranges, _ = self.transfer_tiktok(quota_blocked=True)
+        self.assertEqual(result['wait_reason'], 'quota')
+        self.assertEqual(ranges, [])
+        self.assertEqual(part.read_bytes(), b'old-hevc-prefix')
+        self.assertEqual(marker.read_text(), '{"old":true}')
+        self.assertEqual(list(part.parent.glob(part.name + '.preserved-*')), [])
+
+    def test_tiktok_partial_state_symlinks_are_rejected(self):
+        root = self.root / 'capture'
+        root.mkdir()
+        outside = self.root / 'outside'
+        outside.write_bytes(b'untouched')
+        for suffix in ('.part', '.format.json'):
+            candidate = root / ('123_00_.mp4' + suffix)
+            candidate.symlink_to(outside)
+            with self.subTest(suffix=suffix):
+                result, ranges, _ = self.transfer_tiktok()
+                self.assertEqual(result['code'], 1)
+                self.assertEqual(ranges, [])
+                self.assertEqual(outside.read_bytes(), b'untouched')
+                self.assertTrue(candidate.is_symlink())
+            candidate.unlink()
+
+    def test_tiktok_completed_file_is_not_replaced_after_format_change(self):
+        result, _, body = self.transfer_tiktok(codec='h265', format_id='hevc')
+        self.assertEqual(result['code'], 0)
+        root = self.root / 'capture'
+        marker = root / '123_00_.mp4.format.json'
+        before = marker.read_bytes()
+        result, ranges, _ = self.transfer_tiktok()
+        self.assertEqual(result['code'], 0)
+        self.assertEqual(ranges, [])
+        self.assertEqual((root / '123_00_.mp4').read_bytes(), body)
+        self.assertEqual(marker.read_bytes(), before)
 
 
 if __name__ == '__main__':

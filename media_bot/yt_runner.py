@@ -1,8 +1,10 @@
 """TikTok and YouTube video capture through yt-dlp; same quota/result contract as gallery."""
 import json
 import shutil
+import os
 from pathlib import Path
 import time
+import uuid
 from email.utils import parsedate_to_datetime
 from requests.cookies import create_cookie
 from yt_dlp import YoutubeDL
@@ -10,7 +12,44 @@ from yt_dlp.networking.exceptions import HTTPError
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from . import core as c
 
+# Prefer a complete H.264 MP4 for playback compatibility; no merging or transcoding.
+TIKTOK_FORMAT = (
+    "best[ext=mp4][vcodec~='^(h264|avc1)'][protocol=https]/"
+    'best[ext=mp4][protocol=https]/best[protocol=https]/best[protocol=http]'
+)
+
 class StopCapture(BaseException):pass
+
+def _prepare_partial(path, info):
+    """Resume only a partial recorded for this format; keep other bytes intact."""
+    part = path.with_name(path.name + '.part')
+    marker = path.with_name(path.name + '.format.json')
+    for candidate in (part, marker):
+        if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+            raise ValueError('Invalid partial state path')
+    # Deliberately exclude URLs, headers and cookies from persistent state.
+    fingerprint = {'version': 1, 'format': {key: info.get(key) for key in (
+        'id', 'format_id', 'vcodec', 'acodec', 'ext', 'width', 'height', 'fps', 'filesize')}}
+    try:
+        previous = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        previous = None
+    if previous == fingerprint:
+        return
+    if part.exists():
+        # Hardlink plus unlink preserves bytes on the same filesystem and never
+        # overwrites another preservation file, even if a name already exists.
+        preserved = part.with_name(part.name + '.preserved-' + uuid.uuid4().hex)
+        os.link(part, preserved, follow_symlinks=False)
+        part.unlink()
+    temporary = marker.with_name(marker.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        with temporary.open('x', encoding='utf-8') as stream:
+            os.chmod(temporary, 0o600)
+            json.dump(fingerprint, stream, sort_keys=True)
+        temporary.replace(marker)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 def run(payload):
     root=Path(payload['root']).resolve();root.mkdir(parents=True,exist_ok=True)
@@ -63,10 +102,11 @@ def run(payload):
                     if c.reserve_media(platform,item):result['media_attempts']+=1
                 except c.RateLimited as error:
                     result.update(retry_at=error.until,wait_reason='quota');raise StopCapture()
+                _prepare_partial(path, info)
             return super().dl(name,info,subtitle,test)
     params={'logger':Logger(),'quiet':True,'noprogress':True,'noplaylist':True,
             'socket_timeout':30,'retries':2,'extractor_retries':2,
-            'format':'best[ext=mp4][protocol=https]/best[protocol=https]/best[protocol=http]',
+            'format':TIKTOK_FORMAT,
             'outtmpl':str(root/'%(id)s_00_.%(ext)s'),'overwrites':False,
             'cachedir':False,'usenetrc':False,'cookiefile':None}
     def reject_live(info, *, incomplete):
@@ -75,10 +115,12 @@ def run(payload):
             return 'Live broadcast not supported'
         return None
     if youtube:
-        # Prefer MP4 with H.264/AAC for Telegram; fall back to a combined stream.
+        # Prefer complete H.264; merge H.264/AAC only as a fallback, never encode.
+        h264="[ext=mp4][vcodec~='^(h264|avc1)']"
         combined='best[ext=mp4]/best[ext=webm]'
-        params.update(format=('bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/'
-                              if shutil.which('ffmpeg') else '')+combined,
+        separate=('bestvideo'+h264+"+bestaudio[ext=m4a][acodec~='^(aac|mp4a)']/"
+                  if shutil.which('ffmpeg') else '')
+        params.update(format='best'+h264+'/'+separate+combined,
                       format_sort=['res:720'],match_filter=reject_live)
     else:
         params['impersonate']=ImpersonateTarget.from_str('chrome')

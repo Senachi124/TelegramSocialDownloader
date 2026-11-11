@@ -10,3 +10,12 @@
 4. 未驗證：真實 Telegram 發送及部署環境的 PATH。下次啟動服務時，確認 bot 程序可找到 Deno，建議同時提供 FFmpeg／ffprobe，再貼上公開影片或 Shorts 試送。
 
 YouTube 改動位於 `feat/youtube-support` 分支，基於 `origin/main`。
+
+## 2026-11-11：PR #1 衝突與 review 修正
+
+- 將 `main` 的 `8423da4` 整合進 `feat/youtube-support`，解決 `README.md`、`docs/architecture.md`、`media_bot/yt_runner.py` 的衝突；保留 TikTok H.264 優先與格式不匹配 partial 保留／安全續傳。
+- 依 review 與後續 H.264 要求：先下載已有影音的 H.264 MP4，其次在 FFmpeg 可用時直接合併 H.264＋AAC，最後備援完整 MP4／WebM。合併使用 stream copy，不重新壓制。
+- 新增 `docs/youtube.md`，同步架構、README、需求與 changelog；不變更套件版本或資料庫 schema。
+- 驗證：Python 3.14、yt-dlp 2026.10.21 下，`python -m unittest discover -s tests -q` 共 94 項通過；包含 6 項新增 YouTube 格式／合併回歸，以及 main 的 TikTok 格式與 HTTP Range 續傳回歸。`pip check`、CLI `--help`、diff whitespace 檢查通過。獨立 Code Reviewer 已檢查 runner 與測試，未發現阻擋問題。
+- 本次只做合成資料／模擬平台及本機 HTTP 測試；沒有真實 YouTube 下載、Telegram 發送或正式部署。上一節的實站下載紀錄屬原 PR 版本，不能當作本次選擇順序的實站驗收。正式服務登記與部署索引不受此次 PR 修改影響。
+- 衝突解決、review 修改、測試和文件放在同一個新增 merge commit，保留原分支歷史；PR 合併另行處理。需要撤回本次修正時應用新的 revert commit，勿覆寫遠端歷史或還原執行中資料。

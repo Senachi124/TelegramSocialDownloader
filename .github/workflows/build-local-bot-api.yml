@@ -1,0 +1,68 @@
+name: Build pinned Local Bot API
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/build-local-bot-api.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out official pinned source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: tdlib/telegram-bot-api
+          ref: 7232881b39dfcd048a0d569f1983c5184249ee05
+          path: upstream
+          submodules: recursive
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cmake g++ gperf libssl-dev zlib1g-dev
+      - name: Verify source and build
+        run: |
+          test "$(git -C upstream rev-parse HEAD)" = 7232881b39dfcd048a0d569f1983c5184249ee05
+          test "$(git -C upstream/td rev-parse HEAD)" = c8828d50f5eac2fc7089ce1089d7ce9095c61b5e
+          test -z "$(git -C upstream status --porcelain --untracked-files=no)"
+          test -z "$(git -C upstream/td status --porcelain --untracked-files=no)"
+          cmake -S upstream -B upstream/build -DCMAKE_BUILD_TYPE=Release \
+            '-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG' -DTELEGRAM_BOT_API_ENABLE_LTO=OFF
+          cmake --build upstream/build --target telegram-bot-api --parallel 4
+      - name: Record artifact provenance
+        run: |
+          mkdir -p artifact
+          cp upstream/build/telegram-bot-api artifact/telegram-bot-api
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          binary=pathlib.Path('artifact/telegram-bot-api')
+          version=subprocess.check_output([str(binary.resolve()), '--version'], text=True).strip()
+          assert '10.4' in version
+          result={
+              'repository':'https://github.com/tdlib/telegram-bot-api.git',
+              'commit':'7232881b39dfcd048a0d569f1983c5184249ee05',
+              'tdlib_commit':'c8828d50f5eac2fc7089ce1089d7ce9095c61b5e',
+              'version':version, 'sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
+              'build_origin':'github_actions',
+              'workflow_repository':os.environ['GITHUB_REPOSITORY'],
+              'workflow_head_sha':os.environ['GITHUB_SHA'],
+              'workflow_run_id':os.environ['GITHUB_RUN_ID'],
+              'workflow_run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],
+              'runner_os':'ubuntu-24.04', 'jobs':4, 'source_clean':True,
+          }
+          pathlib.Path('artifact/build-manifest.json').write_text(json.dumps(result,indent=2)+'\n')
+          PY
+      - name: Upload binary and provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: telegram-bot-api-linux-amd64
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0

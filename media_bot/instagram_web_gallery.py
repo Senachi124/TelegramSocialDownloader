@@ -10,6 +10,65 @@ from .instagram_web_timeline import pages, TimelineError
 from .instagram_policy import RequestWindow
 
 
+def _optional_post_errors(payload, items, shortcode):
+    """Accept only the observed AI-decoration failure on an identified post.
+
+    The transport has already rejected authentication/rate-limit responses.
+    Never treat an arbitrary GraphQL error or partial media list as success.
+    """
+    errors = payload.get('errors')
+    if (not isinstance(errors, list) or not errors or
+            payload.get('status') not in (None, 'ok') or
+            not isinstance(items, list) or len(items) != 1):
+        return False
+    item = items[0]
+    if (not isinstance(item, dict) or item.get('code') != shortcode or
+            not str(item.get('pk') or '').isdigit()):
+        return False
+    media_type = item.get('media_type')
+    if type(media_type) is not int or media_type not in (1, 2, 8):
+        return False
+    children = item.get('carousel_media') if media_type == 8 else [item]
+    if (not isinstance(children, list) or not children or
+            (media_type == 8 and (type(item.get('carousel_media_count')) is not int or
+                                item['carousel_media_count'] != len(children)))):
+        return False
+    identities = set()
+    for child in children:
+        if not isinstance(child, dict):
+            return False
+        identity = str(child.get('pk') or '')
+        kind = child.get('media_type')
+        if (not identity.isdigit() or identity in identities or
+                type(kind) is not int or kind not in (1, 2)):
+            return False
+        identities.add(identity)
+        images = child.get('image_versions2')
+        variants = (child.get('video_versions') if kind == 2 else
+                    images.get('candidates') if isinstance(images, dict) else None)
+        if not isinstance(variants, list) or not any(
+                isinstance(v, dict) and isinstance(v.get('url'), str) and v['url']
+                for v in variants):
+            return False
+    field = 'ai_interactive_embodiment_attachment_style_info'
+    allowed_paths = (
+        ['_xdt_api__v1__media__shortcode__web_info_items', 0, 'node', field],
+        ['xdt_api__v1__media__shortcode__web_info', 'items', 0, field],
+    )
+    for error in errors:
+        if not isinstance(error, dict):
+            return False
+        path = error.get('path')
+        # bool and float compare equal to int, but are not GraphQL list indices.
+        if (not isinstance(path, list) or path not in allowed_paths or
+                type(path[1] if path[0] == allowed_paths[0][0] else path[2]) is not int or
+                error.get('severity') != 'ERROR' or
+                error.get('message') !=
+                'A server error field_exception occured. Check server logs for details.'):
+            return False
+    return True
+
+
 def install_web_graphql(result):
     from gallery_dl.extractor.instagram import InstagramAPI, InstagramExtractor, QUERIES
     if getattr(InstagramAPI, '_bot_web_graphql', False):
@@ -163,8 +222,11 @@ def install_web_graphql(result):
         payload = call(api, '27128499623469141', {'shortcode':shortcode,
             '__relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider':False}, web_api=True)
         items = ((payload.get('data') or {}).get('xdt_api__v1__media__shortcode__web_info') or {}).get('items')
-        if payload.get('errors') or not items:
+        if not items or (payload.get('errors') and
+                         not _optional_post_errors(payload, items, shortcode)):
             raise api.exc.AbortExtraction('missing_post_media')
+        if payload.get('errors'):
+            api.extractor.log.info('略過 %s 個 AI 裝飾選填欄位錯誤', len(payload['errors']))
         return iter(items)
 
     def finalize(extractor, status):

@@ -4,7 +4,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- TikTok `vt`／`vm` 短連結尾端的愛心、emoji 及其組合不再被當成網址；修正一般分享文字、caption 與 Telegram URL entity 的識別。只清除完整短碼後的裝飾符號，保留 query、fragment、其他網址與隱藏連結的明確目標。
+
+## [0.10.1] - 2026-11-17
+
 ### Added
+
+- 可從一般分享文字、媒體說明與 Telegram 隱藏文字連結自動找出支援的平台 HTTPS 網址；處理 UTF-16 位置、常見標點與多連結，依順序去除重複網址並忽略不支援的連結。保留每則 50 個有效連結上限、既有偏好、短連結安全解析和下載／存取限制，無需資料遷移。
 
 - 新增固定官方來源與 TDLib revision 的 Local Bot API GitHub Actions 編譯檢查，產出 Linux amd64 binary 與來源／SHA-256 manifest，三天後移除 artifact；不包含 Bot 憑證或自動部署。
 - 支援公開 YouTube 影片、Shorts 和 youtu.be，可單獨或混合批次下載；需要 Deno，建議 FFmpeg。原匿名下載方式保留，新增的 Cookie、Local API 與偏好選項見下列條目。
@@ -14,6 +22,8 @@
 - 可選外部0600 Netscape YouTube Cookie檔；未設定時維持匿名，僅載入有效YouTube域Cookie。不加入私人帳號池、管理介面或主機設定。
 
 ### Changed
+
+- 依指定版本將公開核心從 `0.1.0` 對齊私人 Bot 的 `0.10.1`；包含此次訊息多連結解析功能，套件 metadata 與 `__version__` 一致。
 
 - 預設最高畫質（HDR優先可關閉），H.264只在相同畫質時優先。YouTube有FFmpeg時可直接合併原始串流，不重新壓制；取消720p偏好與低解析度完整H.264的優先地位。
 - Instagram依明確API／DASH CICP標記識別HDR及明確圖片HDR，保留請求計量與Cookie隔離。DASH缺段會失敗，不靜默降級；不猜測HEVC或10-bit必為HDR。

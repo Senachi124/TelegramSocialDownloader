@@ -141,7 +141,7 @@ def handle_update(u):
         help_text=help_text_for_runtime()
         telegram('sendMessage',{'chat_id':chat_id,'text':help_text if command in ('/start','/help') else '請輸入 /help 查看使用說明。'})
     else:
-        urls=c.extract_urls(text)
+        urls=c.extract_message_urls(m)
         if not urls:telegram('sendMessage',{'chat_id':chat_id,'text':'請貼上 Instagram、TikTok、Twitter / X 或 YouTube HTTPS 連結'});return
         if len(urls)>1:
             try:

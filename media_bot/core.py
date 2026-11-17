@@ -180,10 +180,18 @@ def classify(url):
     return platform,'resolve'
 
 def extract_urls(text):
-    # Bare TikTok shares are accepted only at a text-token boundary. Keep HTTPS
-    # links intact so a nested/lookalike URL cannot become a different request.
-    urls=re.findall(r'https://[^\s<>]+|(?<![^\s<])(?:vt|vm)\.tiktok\.com/[^\s<>]+',text)
-    return [url if url.startswith('https://') else 'https://'+url for url in urls]
+    from .message_links import candidates
+    return candidates(text)
+
+
+def extract_message_urls(message):
+    from .message_links import extract
+    if isinstance(message.get('text'),str):
+        text,entities=message['text'],message.get('entities',[])
+    else:
+        text,entities=message.get('caption',''),message.get('caption_entities',[])
+    return extract(text,entities,validate_url,classify)
+
 
 def reserve_media(platform,item,at=None):
     """Reserve one new media download in a persistent rolling 60-second window.

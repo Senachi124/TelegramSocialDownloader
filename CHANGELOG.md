@@ -6,6 +6,8 @@
 
 ### Added
 
+- 可從一般分享文字、媒體說明與 Telegram 隱藏文字連結自動找出支援的平台 HTTPS 網址；處理 UTF-16 位置、常見標點與多連結，依順序去除重複網址並忽略不支援的連結。保留每則 50 個有效連結上限、既有偏好、短連結安全解析和下載／存取限制，無需資料遷移。
+
 - 新增固定官方來源與 TDLib revision 的 Local Bot API GitHub Actions 編譯檢查，產出 Linux amd64 binary 與來源／SHA-256 manifest，三天後移除 artifact；不包含 Bot 憑證或自動部署。
 - 支援公開 YouTube 影片、Shorts 和 youtu.be，可單獨或混合批次下載；需要 Deno，建議 FFmpeg。原匿名下載方式保留，新增的 Cookie、Local API 與偏好選項見下列條目。
 - 完整架構文件含使用者流程、背景時序、狀態、SQLite ER 圖及參考 SQL；根目錄 `AGENTS.md` 定義每次變更須同步 changelog，README 提供文件與逐檔導覽入口。

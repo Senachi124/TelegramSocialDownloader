@@ -159,3 +159,14 @@ TikTok 續傳以每個輸出檔旁的 `.format.json` 記錄格式識別與影音
 | [docs/instagram-rate-schema.sql](docs/instagram-rate-schema.sql) | 從 Instagram 限速器整理的 3 張表 DDL；只描述結構，初始化時間由程式設定。 |
 
 新增模組：`preferences.py`（每位使用者設定）、`media_preferences.py`（下載選擇）、`limits.py`／`download_size.py`（傳送／下載限制）、`links.py`（可選URL服務）、`instagram_quality.py`（明確HDR判斷）、`youtube_cookies.py`（限定域Netscape parser）。
+
+## 訊息中的下載連結
+
+可直接貼上包含說明文字的分享訊息；Bot 會從文字、媒體說明（caption）及
+Telegram 隱藏文字連結找出目前支援的平台 HTTPS 網址，依出現順序處理。
+例如 `幫我下載：https://instagram.com/p/ABC/，還有 https://x.com/example/status/123`。
+一般標點、括號與 Markdown 包裝會自動排除；同則訊息中相同的正規化網址
+只處理一次，不受支援或格式錯誤的網址會忽略。仍支援省略 HTTPS 的
+`vt.tiktok.com/…`／`vm.tiktok.com/…` 短連結。每則最多 50 個不同的有效連結；
+超過上限會拒絕整則，不會只下載前 50 個。每個工作保留既有下載偏好，短連結
+仍由背景工作解析；實際下載是否成功取決於內容存取權限與平台回應。

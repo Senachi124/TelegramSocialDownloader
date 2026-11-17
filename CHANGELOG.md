@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- TikTok `vt`／`vm` 短連結尾端的愛心、emoji 及其組合不再被當成網址；修正一般分享文字、caption 與 Telegram URL entity 的識別。只清除完整短碼後的裝飾符號，保留 query、fragment、其他網址與隱藏連結的明確目標。
+
 ## [0.10.1] - 2026-11-17
 
 ### Added

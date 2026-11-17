@@ -1,5 +1,6 @@
 """Offline extraction of message links; URL policy stays with the caller."""
 import re
+import unicodedata
 
 # Consume whole URL tokens (including unsupported schemes/hosts) so a nested
 # HTTPS URL can never be promoted into an independent download request.
@@ -8,6 +9,24 @@ _START = re.compile(
 _DELIMITERS = set("<>\"'`，。；！？、：（）【】「」『』“”‘’")
 _TRAILING = '.,;!?:'
 _PAIRS = {')': '(', ']': '[', '}': '{'}
+_SHORTLINK_DECORATIONS = re.compile(
+    r'^(?P<link>(?:https://)?(?:vt|vm)\.tiktok\.com/[A-Za-z0-9_-]+/?)'
+    r'(?P<suffix>[^\x00-\x7f]+)$')
+
+
+def _clean_shortlink(value):
+    # TikTok short codes are ASCII. Only remove a trailing decorative sequence
+    # after a complete short code; never alter queries, fragments or other hosts.
+    match = _SHORTLINK_DECORATIONS.fullmatch(value)
+    if match:
+        suffix = match['suffix']
+        if (unicodedata.category(suffix[0]).startswith('S')
+                and all(unicodedata.category(char).startswith('S')
+                        or char in ('\ufe0e', '\ufe0f', '\u200d') for char in suffix)):
+            return match['link']
+    return value
+
+
 _SCHEME_PREFIX = re.compile(r'(?:javascript|data|file|http|https|ftp|mailto|tel):$', re.I)
 
 
@@ -43,7 +62,7 @@ def _clean_token(value):
                 value = value[:-1]
         if value == before:
             break
-    return value
+    return _clean_shortlink(value)
 
 
 def _https(value):
@@ -72,7 +91,7 @@ def _entity_links(text, entities):
         if start not in boundaries or start + length not in boundaries:
             continue
         begin, end = boundaries[start], boundaries[start + length]
-        value = entity.get('url') if entity['type'] == 'text_link' else text[begin:end]
+        value = entity.get('url') if entity['type'] == 'text_link' else _clean_shortlink(text[begin:end])
         # Even an unsupported entity masks its label: a hidden target must not
         # cause a URL-looking label to download a different resource.
         yield begin, end, value

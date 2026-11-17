@@ -103,6 +103,38 @@ class MessageExtractionTests(unittest.TestCase):
              patch.object(c.socket, 'getaddrinfo', side_effect=AssertionError('DNS')):
             self.assertEqual(self.urls(TT + ' and ' + IG), [TT, IG])
 
+    def test_decorated_tiktok_share_text_and_url_entities(self):
+        bare = 'vt.tiktok.com/TEST123/'
+        text = '𝐓𝐢𝐤𝐓𝐨𝐤更新しました🪄︎︎◝✩\n是非いいねコメントまってましゅ！！\n\n👉🏻' + bare + '♡\n\n#sample'
+        self.assertEqual(self.urls(text), ['https://' + bare])
+        for length in (units(bare), units(bare + '♡')):
+            entity = {'type': 'url', 'offset': units(text[:text.index(bare)]), 'length': length}
+            self.assertEqual(self.urls(text, entities=[entity]), ['https://' + bare])
+        self.assertEqual(c.extract_message_urls({'caption': text}), ['https://' + bare])
+        self.assertEqual(c.extract_message_urls({'caption': text, 'caption_entities': [entity]}), ['https://' + bare])
+
+    def test_shortlink_decorations_and_multiple_links(self):
+        for host in ('vt', 'vm'):
+            for scheme in ('', 'https://'):
+                for slash in ('', '/'):
+                    bare = host + '.tiktok.com/TEST123' + slash
+                    for suffix in ('♡', '♥', '❤️', '🪄︎︎', '👩🏽‍💻', '✨♡'):
+                        text = '👉🏻' + scheme + bare + suffix + ' ' + IG
+                        with self.subTest(text=text):
+                            self.assertEqual(self.urls(text), ['https://' + bare, IG])
+
+    def test_shortlink_cleanup_preserves_url_data_and_explicit_targets(self):
+        for url in (TT + '?label=♡', TT + '?label=❤️', IG + '?label=♡',
+                    TT + '%E2%99%A1', TT + '名前', TT + '♡name'):
+            self.assertEqual(c.extract_urls(url), [url])
+        for text in ('https://evil.test/' + TT + '♡', 'user@vt.tiktok.com/TEST123/♡',
+                     'vt.tiktok.com.evil/TEST123/♡', 'http://vt.tiktok.com/TEST123/♡'):
+            self.assertEqual(self.urls(text), [])
+        self.assertEqual(c.extract_urls(TT + '#♡'), [TT + '#♡'])
+        target = TT + '♡'
+        self.assertEqual(self.urls('watch', entities=[{'type': 'text_link', 'offset': 0,
+                         'length': 5, 'url': target}]), [target])
+
     def test_no_links_or_missing_content(self):
         for message in ({}, {'text': ''}, {'text': 'hello'}, {'caption': None}):
             self.assertEqual(c.extract_message_urls(message), [])
@@ -143,6 +175,14 @@ class MessageIntakeTests(unittest.TestCase):
         self.assertEqual(self.jobs()[0]['mode'], 'batch')
         with c.db() as db:
             self.assertEqual([row[0] for row in db.execute('SELECT url FROM batch_items ORDER BY position')], [X, IG])
+
+    def test_decorated_shortlink_enters_queue_without_heart(self):
+        text = '𝐓𝐢𝐤𝐓𝐨𝐤更新しました🪄︎︎◝✩\n👉🏻vt.tiktok.com/TEST123/♡\n#sample'
+        worker.handle_update(self.update(text=text))
+        jobs = self.jobs()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual((jobs[0]['url'], jobs[0]['platform'], jobs[0]['mode']),
+                         ('https://vt.tiktok.com/TEST123/', 'tiktok', 'resolve'))
 
     def test_duplicate_only_message_uses_single_job_and_preferences(self):
         worker.handle_update(self.update(text=f'{IG} and {IG}'))

@@ -1,5 +1,6 @@
 """Instagram extraction options, quality preferences and Story routing."""
 import re
+from urllib.parse import urlsplit
 
 def options(cookies):
     # Prefer Instagram's combined MP4, keeping all transfers in the metered HTTP
@@ -18,9 +19,10 @@ def install(result,preferences=None):
         if restore_web:restore_web()
     return restore
 
-def target(url,mode):
+def target(url,mode,*,single_story=False):
     if mode!='stories':return url
-    if re.search(r'/(p|reel|reels|tv)/',url):
+    path=urlsplit(url).path
+    if re.fullmatch(r'/(?:p|reel|reels|tv)/[A-Za-z0-9_-]+/?',path):
         from gallery_dl import extractor
         source=extractor.find(url)
         if source is None:raise ValueError('無法識別貼文作者')
@@ -43,7 +45,9 @@ def target(url,mode):
             finally:
                 if source.session is not None:source.session.close()
     else:
-        match=re.search(r'instagram.com/(?:stories/)?([A-Za-z0-9._]+)',url)
+        match=re.fullmatch(r'/(?:stories/)?([A-Za-z0-9._]{1,30})(?:/([0-9]+))?/?',path)
         if not match:raise ValueError('無法識別作者')
         author=match[1]
+        if single_story and match[2]:
+            return 'https://www.instagram.com/stories/'+author+'/'+match[2]+'/'
     return 'https://www.instagram.com/stories/'+author+'/'

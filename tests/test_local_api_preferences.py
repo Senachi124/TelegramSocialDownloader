@@ -63,8 +63,8 @@ class Features(unittest.TestCase):
         preferences.handle(message('/settings instagram 1,3'),send)
         self.assertNotIn('indices',preferences.load(123)['instagram'])
         self.assertEqual(preferences.load(123)['instagram']['content'],'stories_all')
-        self.assertIn('全部內容，不需設定序號',sent[-1][1]['text'])
-        self.assertEqual(preferences.normalize({'instagram':{'content':'stories_selected','indices':[3]}})['instagram'],{'content':'stories_all','prefer_hdr':True})
+        self.assertIn('限時動態',sent[-1][1]['text'])
+        self.assertEqual(preferences.normalize({'instagram':{'content':'stories_selected','indices':[3]}})['instagram'],{'content':'stories_all','story_scope':'single','prefer_hdr':True})
         with self.assertRaises(ValueError):preferences.save(123,'instagram','indices',[1])
         before=preferences.load(123)
         preferences.handle(message('/settings tiktok 2'),send)
@@ -75,10 +75,39 @@ class Features(unittest.TestCase):
         choices=[b['callback_data'] for row in sent[-1][1]['reply_markup']['inline_keyboard'] for b in row if ':content:' in b['callback_data']]
         self.assertEqual(choices,['pref:tiktok:content:post_all','pref:tiktok:content:stories_all'])
 
+    def test_instagram_story_scope_defaults_and_snapshots_from_real_intake(self):
+        story='https://www.instagram.com/stories/story.fixture/4030000000000000001?utm_source=ig_story_item_share'
+        def message(update_id, text):
+            return {'update_id':update_id, 'message':{'message_id':update_id,'chat':{'type':'private','id':123},
+                                                     'from':{'id':123},'text':text}}
+        legacy=self.job('legacy',url=story,prefs={'instagram':{'content':'post_all','prefer_hdr':True}})
+        c.setting('download_preferences:123',{'instagram':{'content':'stories_all','indices':[1]}})
+        self.assertEqual(preferences.load(123)['instagram']['story_scope'],'single')
+        self.assertEqual(preferences.load(456)['instagram']['story_scope'],'single')
+        with patch.object(w,'telegram',return_value={'message_id':3}):
+            w.handle_update(message(108,story))
+            cb={'callback_query':{'from':{'id':123},'id':'button','data':'pref:instagram:story_scope:all',
+                                  'message':{'chat':{'id':123,'type':'private'}}}}
+            w.handle_update(cb)
+            w.handle_update(message(109,story+' https://x.com/fixture/status/123'))
+        with c.db() as db:
+            single=dict(db.execute("SELECT * FROM jobs WHERE update_key='108:0'").fetchone())
+            batch=dict(db.execute("SELECT * FROM jobs WHERE update_key='109:batch'").fetchone())
+        self.assertEqual(single['mode'],'stories')
+        self.assertIn('/stories/story.fixture/4030000000000000001',single['url'])
+        self.assertEqual(json.loads(single['preferences'])['instagram']['story_scope'],'single')
+        self.assertEqual(json.loads(batch['preferences'])['instagram']['story_scope'],'all')
+        self.assertNotIn('story_scope',json.loads(c.job_by_id(legacy['id'])['preferences'])['instagram'])
+        self.assertEqual(preferences.load(456)['instagram']['story_scope'],'single')
+        preferences.handle({'callback_query':{'from':{'id':123},'id':'reset','data':'pref:reset',
+                                             'message':{'chat':{'id':123,'type':'private'}}}},Mock())
+        self.assertEqual(preferences.load(123)['instagram']['story_scope'],'single')
+
     def test_batch_notice_is_atomic(self):
-        key=c.enqueue_batch('batch',123,['https://instagram.com/stories/example/1/','https://youtu.be/Abc123_X-yZ'],1,preferences=preferences.load(123))
-        self.assertIn('第 1 個連結',preferences.notice_text(key))
-        with c.db() as db:self.assertEqual([r[0] for r in db.execute('SELECT mode FROM batch_items WHERE job=? ORDER BY position',(key,))],['stories','post'])
+        key=c.enqueue_batch('batch',123,['https://instagram.com/stories/example/1/','https://youtu.be/Abc123_X-yZ','https://www.tiktok.com/@example/stories'],1,preferences=preferences.load(123))
+        self.assertIn('第 3 個連結',preferences.notice_text(key))
+        self.assertNotIn('第 1 個連結',preferences.notice_text(key))
+        with c.db() as db:self.assertEqual([r[0] for r in db.execute('SELECT mode FROM batch_items WHERE job=? ORDER BY position',(key,))],['stories','post','stories'])
     def test_size_boundaries_receipt_and_optional_link(self):
         for size,method in ((500_000_000,'sendDocument'),(500_000_001,'sendMessage')):
             job=self.job(str(size));file=self.file(job,size)

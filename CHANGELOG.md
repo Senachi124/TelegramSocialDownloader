@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-20
+
+### Added
+
+- Instagram Story 分享網址可按 Story ID 傳送指定圖片或原影片，並忽略分享追蹤參數；找不到該項目時會回報。沒有 ID 的作者頁或 Story 連結預設傳送最新一項。
+- 新增每位使用者的 IG Story 範圍設定。所有使用者的新工作預設單項，可在 `/settings ig` 明確選擇整組。已入列的工作沿用原有快照，原有將貼文轉為作者 Story 的偏好仍可使用。
+
 ### Fixed
 
 - TikTok `vt`／`vm` 短連結尾端的愛心、emoji 及其組合不再被當成網址；修正一般分享文字、caption 與 Telegram URL entity 的識別。只清除完整短碼後的裝飾符號，保留 query、fragment、其他網址與隱藏連結的明確目標。

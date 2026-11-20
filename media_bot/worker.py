@@ -112,7 +112,7 @@ def authorized_update(u):
             and not actor.get('is_bot') and config.allowed(chat.get('id')))
 
 def help_text_for_runtime():
-    text='貼上 Instagram、TikTok、Twitter / X 或 YouTube HTTPS 連結；每則最多 50 個。\n/settings 設定 IG／TikTok 貼文或限時動態，以及 YouTube 畫質／HDR。IG「指定連結中的圖片」讀取每條連結的 ?img_index=3（原輪播第 3 項）；缺少或格式無效時下載全部內容，位置超出範圍或不是圖片時下載可確認的圖片，沒有圖片則保留原內容，並說明原因。IG 限時動態一律下載全部可存取內容，不需設定序號；TikTok 只選貼文全部內容或作者全部限時動態。新工作保存設定，不再逐次詢問。\n預設 HDR 優先，然後最高畫質；相同畫質優先 H.264。若偏好無法套用，會說明備援。\n單檔下載超過 2000 MB 立即取消，已有檔案保留。MB 使用十進位。\n'
+    text='貼上 Instagram、TikTok、Twitter / X 或 YouTube HTTPS 連結；每則最多 50 個。\n/settings 設定 IG／TikTok 貼文或限時動態，以及 YouTube 畫質／HDR。IG「指定連結中的圖片」讀取每條連結的 ?img_index=3（原輪播第 3 項）；缺少或格式無效時下載全部內容，位置超出範圍或不是圖片時下載可確認的圖片，沒有圖片則保留原內容，並說明原因。IG Story 預設只傳連結指定的一張圖片或一段影片；沒有 Story ID 時傳最新一項。可在 /settings ig 改為全部；TikTok 只選貼文全部內容或作者全部限時動態。新工作保存設定，不再逐次詢問。\n預設 HDR 優先，然後最高畫質；相同畫質優先 H.264。若偏好無法套用，會說明備援。\n單檔下載超過 2000 MB 立即取消，已有檔案保留。MB 使用十進位。\n'
     text+=('Local Bot API：單檔最多 500 MB 直接傳送；大於 500 MB 改提供下載連結。' if limits.local_api_enabled() else '目前使用雲端 Bot API：單檔達 49 MiB 改提供下載連結。')
     text+=('網址及已確認交付的連結檔案只保留 2 小時；直接傳送成功的檔案保留 24 小時。' if links.enabled() else '尚未設定下載網址：超過傳送上限的檔案保留本機並標記部分完成，無法提供連結。')
     return text
@@ -274,6 +274,7 @@ def download(job):
         c.update(job['id'],state='paused');status(job,label+' 此工作帳號的 Cookie 需在設定更新');return False
     add_files(job,result['files'])
     reason=tiktok.failure_message(result.get('failure'),job['mode']) if platform=='tiktok' and result['code'] else ''
+    if platform=='instagram' and result.get('failure')=='story_unavailable':reason='指定的限時動態已過期或目前無法存取。'
     if platform=='twitter' and result['code']:reason=twitter.failure_message(result.get('failure'))
     if platform=='youtube' and result['code']:
         from .yt_runner import youtube_failure_message
@@ -378,6 +379,7 @@ def process_batch(job):
         reason=''
         if result.get('auth_required'):reason=label+' 此工作帳號的 Cookie 需在設定更新'
         elif result.get('no_media'):reason='此貼文沒有圖片或影片'
+        elif platform=='instagram' and result.get('failure')=='story_unavailable':reason='指定的限時動態已過期或目前無法存取。'
         elif platform=='youtube' and result['code']:
             from .yt_runner import youtube_failure_message
             reason=youtube_failure_message(result.get('failure'))

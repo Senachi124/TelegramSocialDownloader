@@ -5,15 +5,16 @@ import json
 from . import config,core as c
 
 DEFAULTS={
-    'instagram':{'content':'post_all','prefer_hdr':True},
+    'instagram':{'content':'post_all','prefer_hdr':True,'story_scope':'single'},
     'tiktok':{'content':'post_all'},
     'youtube':{'quality':'best','prefer_hdr':True},
 }
 LABELS={'instagram':'Instagram','tiktok':'TikTok','youtube':'YouTube'}
 CONTENT={
-    'instagram':{'post_all':'貼文全部內容','post_images':'指定連結中的圖片','stories_all':'作者全部限時動態'},
+    'instagram':{'post_all':'貼文全部內容','post_images':'指定連結中的圖片','stories_all':'改取作者限時動態'},
     'tiktok':{'post_all':'貼文全部內容','stories_all':'作者全部限時動態'},
 }
+STORY_SCOPE={'single':'單則限時動態','all':'全部限時動態'}
 QUALITY={'best':'最高畫質','1080':'優先 1080p 以下','720':'優先 720p 以下','480':'優先 480p 以下'}
 
 
@@ -27,6 +28,8 @@ def normalize(value):
         if platform=='instagram' and content=='stories_selected':content='stories_all'
         if platform=='tiktok':content={'post_selected':'post_all','stories_selected':'stories_all'}.get(content,content)
         if content in CONTENT.get(platform,{}):fields['content']=content
+        if platform=='instagram' and saved.get('story_scope') in ('single','all'):
+            fields['story_scope']=saved['story_scope']
         if platform=='youtube' and saved.get('quality') in QUALITY:fields['quality']=saved['quality']
         if 'prefer_hdr' in fields and type(saved.get('prefer_hdr')) is bool:fields['prefer_hdr']=saved['prefer_hdr']
     return result
@@ -68,6 +71,7 @@ def route(platform,mode,url,preference):
     content=preference.get('content','post_all')
     wants_stories=content.startswith('stories_')
     if mode=='stories':
+        if platform=='instagram':return 'stories',''
         if not wants_stories:
             return 'stories','無法套用貼文／單一圖片偏好；目前識別為限時動態或使用者連結，已改為下載可存取的限時動態。'
         return 'stories',''
@@ -95,12 +99,14 @@ def show(send,actor,platform=''):
         if platform not in DEFAULTS:raise ValueError('無效平台')
         p=prefs[platform];text.append('<b>'+LABELS[platform]+'</b>')
         if platform in CONTENT:
-            text.append('目前：'+CONTENT[platform][p['content']])
+            text.append(('貼文連結：' if platform=='instagram' else '目前：')+CONTENT[platform][p['content']])
             for key,label in CONTENT[platform].items():
                 rows.append([_button(('✓ ' if p['content']==key else '')+label,platform+':content:'+key)])
             if platform=='instagram':
                 text.append('「指定連結中的圖片」讀取每條貼文連結的 <code>?img_index=3</code>，代表原始輪播第 3 項；不使用全域圖片序號。缺少或格式無效時下載全部內容；超出範圍或該位置不是圖片時改下載可確認的圖片，沒有圖片則保留可確認的原內容並說明。')
-                text.append('Instagram 限時動態一律下載目前可存取的全部內容，不需設定序號。')
+                text.append('限時動態：'+STORY_SCOPE[p['story_scope']]+'。單則模式下載連結指定的那一則；作者連結沒有指定編號時取最新一則，影片保留原影片。')
+                for key,label in STORY_SCOPE.items():
+                    rows.append([_button(('✓ ' if p['story_scope']==key else '')+label,platform+':story_scope:'+key)])
             else:
                 text.append('TikTok 只選貼文全部內容或作者全部限時動態，不提供指定項目或序號。')
         else:
@@ -143,12 +149,12 @@ def handle(update,send):
         elif len(parts)==3:
             platform={'ig':'instagram'}.get(parts[1],parts[1])
             if platform=='instagram':
-                text='Instagram 限時動態會自動下載目前可存取的全部內容，不需設定序號。指定貼文圖片請選「指定連結中的圖片」，並使用貼文連結的 ?img_index=3。'
+                text='Instagram 限時動態預設下載單則；請在 /settings instagram 選擇單則或全部限時動態。指定貼文圖片請選「指定連結中的圖片」，並使用貼文連結的 ?img_index=3。'
             elif platform=='tiktok':
                 text='TikTok 不提供指定項目或序號。請在 /settings tiktok 選擇貼文全部內容或作者全部限時動態。'
             else:raise ValueError('無效平台')
             send('sendMessage',{'chat_id':actor,'text':text})
         else:raise ValueError('請輸入 /settings')
     except (ValueError,PermissionError):
-        send('sendMessage',{'chat_id':actor,'text':'設定無效或無權操作。請輸入 /settings；限時動態一律下載全部可存取內容，不需設定序號。Instagram 指定圖片從連結的 ?img_index=3 取得。'})
+        send('sendMessage',{'chat_id':actor,'text':'設定無效或無權操作。請輸入 /settings 選擇下載範圍。Instagram 指定圖片從連結的 ?img_index=3 取得。'})
     return True

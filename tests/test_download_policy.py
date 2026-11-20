@@ -80,7 +80,7 @@ class PreferenceTests(unittest.TestCase):
             self.assertIn('preference_notice',result)
         result={}
         chosen=media_preferences.effective(saved,url,'stories',result=result)
-        self.assertEqual(chosen['content'],'post_all');self.assertIn('preference_notice',result)
+        self.assertEqual(chosen['content'],'post_all');self.assertNotIn('preference_notice',result)
 
     def test_legacy_tiktok_selection_is_normalized_to_all(self):
         for content,wanted in [('post_selected','post_all'),('stories_selected','stories_all')]:
@@ -161,7 +161,7 @@ class DownloadCeilings(unittest.TestCase):
                 (base+'?img_index=0','post',[1,2,3],True,'post_images'),
                 (base+'?img_index=2','post',[1,3],True,'post_images'),
                 (base+'?img_index=9','post',[1,3],True,'post_images'),
-                (base+'?img_index=3','stories',[1,2,3],True,'post_images'),
+                (base+'?img_index=3','stories',[1,2,3],False,'post_images'),
                 (base+'?img_index=3','post',[1,2,3],False,'post_all')]):
             captured=[];root=self.root/str(index)
             runner=Mock();runner.pathfmt.realpath=str(root/'fixture.jpg')

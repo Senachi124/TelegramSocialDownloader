@@ -23,6 +23,7 @@ def main():
     from gallery_dl import config,job
     adapter=instagram if platform=='instagram' else tiktok
     preferences=p.get('preferences') or {}
+    single_story=(platform=='instagram' and p.get('mode')=='stories' and preferences.get('story_scope')=='single')
     root=Path(p['root']);root.mkdir(parents=True,exist_ok=True)
     result={'code':1,'retry_at':0,'auth_required':False,'files':[],
             'failure':'','http_errors':[],'cookie_used':bool(p.get('cookies')),'started':time.time(),'requests':0,'media_attempts':0,'wait_reason':''}
@@ -119,8 +120,15 @@ def main():
     restore_adapter=lambda:None
     try:
         restore_adapter=adapter.install(result,preferences)
-        url=adapter.target(p['url'],p.get('mode','post'))
-        result['code']=job.DownloadJob(url).run() or 0
+        if single_story:
+            from .instagram_story import SingleStoryExtractor
+            url=instagram.target(p['url'],'stories',single_story=True)
+            source=SingleStoryExtractor.from_url(url)
+        else:
+            source=adapter.target(p['url'],p.get('mode','post'))
+        result['code']=job.DownloadJob(source).run() or 0
+        if single_story and source.unavailable:
+            result.update(code=1,failure='story_unavailable')
         if result.get('error') or result['auth_required']:result['code']=1
     except download_size.DownloadTooLarge:download_size.mark(result)
     except download_size.DownloadStopped:result['code']=1
@@ -133,7 +141,8 @@ def main():
         job.DownloadJob.handle_url=handle_url
         job.DownloadJob.download=original_download
         restore_adapter()
-        for f in [*ordered,*sorted(set(root.iterdir())-set(ordered))]:
+        files=ordered if single_story else [*ordered,*sorted(set(root.iterdir())-set(ordered))]
+        for f in files:
             if f.is_file() and not f.is_symlink() and f.suffix.lower() in ('.mp4','.webm','.mov','.jpg','.jpeg','.png','.webp','.gif'):
                 size=f.stat().st_size
                 if size>download_size.limits.MAX_DOWNLOAD_BYTES:download_size.mark(result)

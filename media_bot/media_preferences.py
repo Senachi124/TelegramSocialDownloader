@@ -14,6 +14,9 @@ def effective(preferences,url,mode,*,platform='instagram',result=None):
     if platform=='instagram':
         selected.pop('indices',None)
         if selected.get('content')=='stories_selected':selected['content']='stories_all'
+        if mode=='stories' and selected.get('content')=='post_images':
+            selected['content']='post_all'
+            return selected
     if platform!='instagram' or selected.get('content')!='post_images':return selected
     try:
         parsed=urlsplit(url)

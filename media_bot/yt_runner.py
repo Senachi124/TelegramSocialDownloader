@@ -144,7 +144,7 @@ def run(payload):
             return 'Live broadcast not supported'
         return None
     if youtube:
-        # Select original quality first; MKV results are converted after download.
+        # Select original quality first; incompatible video results are converted after download.
         params.update(format=media_preferences.selector(preferences,merge=bool(shutil.which('ffmpeg'))),
                       match_filter=reject_live)
     else:
@@ -171,7 +171,10 @@ def run(payload):
             if youtube and not result['code']:
                 downloads=info.get('requested_downloads') or []
                 if len(downloads)==1 and downloads[0].get('filepath'):
-                    final_path=Path(downloads[0]['filepath'])
+                    reported = Path(downloads[0]['filepath'])
+                    # The configured media root may be reached through a directory
+                    # alias. Keep the leaf name intact for the symlink check below.
+                    final_path = reported.parent.resolve() / reported.name
     except download_size.DownloadTooLarge:download_size.mark(result)
     except StopCapture:pass
     except Exception as error:
@@ -180,26 +183,14 @@ def run(payload):
     finally:
         for path in sorted(root.iterdir()):
             if youtube and (path!=final_path or path.stem!=f'{video_id}_00_'):continue
-            source_mkv = path.with_name(path.name.removesuffix('.h265.mp4') + '.mkv')
-            if path.name.endswith('.h265.mp4') and source_mkv.exists():continue
-            if path.name.endswith('.encoding.mp4'):continue
-            if path.is_file() and not path.is_symlink() and path.suffix.lower() in ('.mp4','.webm','.mov','.mkv'):
+            if video.is_playback_derivative(path):continue
+            if path.is_file() and not path.is_symlink() and path.suffix.lower() in video.VIDEO_DEMUXERS:
                 size=path.stat().st_size
                 if size>download_size.limits.MAX_DOWNLOAD_BYTES:
                     download_size.mark(result);continue
                 if not youtube or size:
                     result['files'].append({'path':str(path),'name':path.name,'size':size})
-        try:
-            for item in result['files']:
-                if Path(item['path']).suffix.lower() == '.mkv':
-                    converted = video.mkv_to_hevc(item['path'])
-                    item.update(path=str(converted), name=converted.name, size=converted.stat().st_size)
-                    media_preferences.record_notice(result,'MKV 已轉換成 H.265 MP4，原始下載檔保留在本機。')
-        except download_size.DownloadTooLarge:
-            download_size.mark(result)
-            result['files'] = []
-        except ValueError:
-            result.update(code=1, failure='conversion_failed', files=[])
+        video.prepare_playback_files(result)
         if not result['files']:result['code']=1
         if result['code']:
             if result.get('oversize'):result['failure']='too_large'
@@ -221,6 +212,6 @@ def youtube_failure_message(reason):
         'live_unsupported':'暫不支援正在直播、未開始或仍在處理的影片。',
         'network_error':'連線 YouTube 失敗或逾時，請稍後重試。',
         'unavailable':'YouTube 回報影片不可用，請確認連結及觀看權限。',
-        'conversion_failed':'MKV 轉換 H.265 MP4 失敗，原檔已保留；請管理員檢查 FFmpeg／ffprobe、libx265 及可用空間。',
+        'conversion_failed':'影片預覽轉換失敗，原檔已保留；請管理員檢查 FFmpeg／ffprobe、libx265 及可用空間。',
         'too_large':'下載超過 2000 MB，已取消並保留未完成資料供管理員檢查。',
     }.get(reason,'YouTube 下載失敗；請確認影片可公開觀看，或請管理員檢查 yt-dlp 及 Deno。')

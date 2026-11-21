@@ -31,10 +31,10 @@ class RuntimeTests(unittest.TestCase):
     def job(self, url='https://x.com/example/status/123', key='event', chat=123):
         return c.job_by_id(c.enqueue(key, chat, url))
 
-    def file(self, job, name='image.jpg', state='pending', size=None):
+    def file(self, job, name='image.jpg', state='pending', size=None, **delivery):
         root = self.root / 'media' / job['id']; root.mkdir(exist_ok=True)
         path = root / name; path.write_bytes(b'synthetic fixture')
-        w.add_files(job, [{'path': str(path), 'name': name, 'size': size or path.stat().st_size}])
+        w.add_files(job, [{'path': str(path), 'name': name, 'size': size or path.stat().st_size, **delivery}])
         with c.db() as db:
             db.execute('UPDATE files SET state=? WHERE path=?', (state, str(path)))
             return dict(db.execute('SELECT * FROM files WHERE path=?', (str(path),)).fetchone())
@@ -209,6 +209,112 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.file_state(file), 'sent')
         self.assertEqual(c.job_by_id(job['id'])['state'], 'completed')
         self.assertTrue(any(call.args[0] == 'sendPhoto' for call in self.telegram.call_args_list))
+
+    def test_original_is_delivered_as_a_separate_document_and_cleaned_after_confirmation(self):
+        job = self.job()
+        preview = self.file(job, 'preview.mp4', supports_streaming=True)
+        original = self.file(job, 'original.mp4', force_document=True)
+        sent = []
+        def record(method, data, files=None):
+            if files:
+                name, stream, mime = next(iter(files.values()))
+                sent.append((method, name, stream.read(), mime, data))
+            return {'message_id': 100 + len(sent)}
+        self.telegram.side_effect = record
+        with patch.object(w.video, 'attributes', return_value={'width': 240, 'height': 320}) as probe:
+            w.deliver(job)
+        probe.assert_called_once_with(Path(preview['path']))
+        self.assertEqual([it[:2] for it in sent],
+                         [('sendVideo', preview['name']), ('sendDocument', original['name'])])
+        self.assertIs(sent[0][4]['supports_streaming'], True)
+        self.assertIs(sent[1][4]['disable_content_type_detection'], True)
+        self.assertEqual(sent[1][2:4], (Path(original['path']).read_bytes(), 'application/octet-stream'))
+        with c.db() as db:
+            receipts = list(db.execute('SELECT telegram_id FROM files WHERE job=? ORDER BY id', (job['id'],)))
+        self.assertEqual([r[0] for r in receipts], ['101', '102'])
+        c.cleanup()
+        self.assertTrue(all(Path(f['path']).exists() for f in (preview, original)))
+        c.update(job['id'], delivered=time.time() - 90000)
+        c.cleanup()
+        self.assertEqual([self.file_state(f) for f in (preview, original)], ['expired', 'expired'])
+        self.assertTrue(all(not Path(f['path']).exists() for f in (preview, original)))
+
+    def test_uncertain_document_preserves_both_files_without_resending_preview(self):
+        job = self.job()
+        preview = self.file(job, 'preview.mp4', supports_streaming=True)
+        original = self.file(job, '原片.webm', force_document=True)
+        def send(method, *args):
+            if method == 'sendDocument':
+                raise TimeoutError()
+            return {'message_id': 42}
+        self.telegram.side_effect = send
+        with patch.object(w.video, 'attributes', return_value={'width': 240, 'height': 320}):
+            w.deliver(job)
+            w.deliver(c.job_by_id(job['id']))
+        attempts = [call.args[0] for call in self.telegram.call_args_list
+                    if call.args[0] in ('sendVideo', 'sendDocument')]
+        self.assertEqual(attempts, ['sendVideo', 'sendDocument'])
+        self.assertEqual([self.file_state(f) for f in (preview, original)], ['sent', 'uncertain'])
+        self.assertEqual(c.job_by_id(job['id'])['state'], 'partial')
+        c.update(job['id'], delivered=time.time() - 90000)
+        c.cleanup()
+        self.assertTrue(all(Path(f['path']).exists() for f in (preview, original)))
+
+    def test_startup_reaps_only_reserved_scratch_in_real_job_directories(self):
+        media = self.root / 'media'
+        job_dir = media / ('1' * 16)
+        batch_dir = job_dir / 'item-1'
+        batch_dir.mkdir(parents=True)
+        other = self.root / 'unrelated'
+        other.mkdir()
+        (job_dir / 'item-2').symlink_to(other, target_is_directory=True)
+        scratch = '.playback-' + '2' * 32 + '.encoding.mp4'
+        for directory in (job_dir, batch_dir, other):
+            (directory / scratch).write_bytes(b'partial')
+            (directory / 'source.mkv').write_bytes(b'original')
+        w._recover_playback_scratch()
+        for directory in (job_dir, batch_dir, other):
+            self.assertEqual((directory / scratch).exists(), directory == other)
+            self.assertEqual((directory / 'source.mkv').read_bytes(), b'original')
+
+    def test_batch_conversion_failure_delivers_original_and_retains_it(self):
+        key = c.enqueue_batch('batch', 123, ['https://youtu.be/Abc123_X-yZ'], 10)
+        job = c.job_by_id(key)
+        root = self.root / 'media' / key / 'item-0'
+        root.mkdir(parents=True)
+        path = root / 'original.mp4'
+        path.write_bytes(b'original content')
+        result = {'files': [{'path': str(path), 'name': path.name, 'size': path.stat().st_size,
+                             'force_document': True}],
+                  'code': 1, 'retry_at': 0, 'failure': 'conversion_failed'}
+        with patch.object(w, 'capture', return_value=result), patch.object(w, 'disk_ok'):
+            w.process_batch(job)
+            w.process_batch(c.job_by_id(key))
+        calls = [call.args[0] for call in self.telegram.call_args_list]
+        self.assertEqual(calls.count('sendDocument'), 1)
+        self.assertNotIn('sendVideo', calls)
+        self.assertEqual(c.job_by_id(key)['state'], 'partial')
+        c.update(key, delivered=time.time() - 90000)
+        c.cleanup()
+        self.assertTrue(path.exists())
+
+    def test_rejected_preview_is_not_sent_as_a_duplicate_document(self):
+        job = self.job()
+        preview = self.file(job, 'preview.mp4', supports_streaming=True)
+        original = self.file(job, 'original.mov', force_document=True)
+        def reject(method, *args):
+            if method == 'sendVideo':
+                raise w.TelegramError(400)
+            return {'message_id': 45}
+        self.telegram.side_effect = reject
+        with patch.object(w.video, 'attributes', return_value={'width': 240, 'height': 320}):
+            w.deliver(job)
+            w.deliver(c.job_by_id(job['id']))
+        sent = [call.args[2]['document'][0] for call in self.telegram.call_args_list
+                if call.args[0] == 'sendDocument']
+        self.assertEqual(sent, [original['name']])
+        self.assertEqual([self.file_state(f) for f in (preview, original)], ['preview_failed', 'sent'])
+        self.assertEqual(c.job_by_id(job['id'])['state'], 'partial')
 
     def test_album_delivery_records_all_receipts(self):
         job = self.job(); files = [self.file(job, name=f'image{i}.jpg') for i in range(2)]

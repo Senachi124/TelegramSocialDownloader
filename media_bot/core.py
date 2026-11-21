@@ -107,9 +107,14 @@ def initialize():
         CREATE TABLE IF NOT EXISTS media_budget(platform TEXT,item TEXT,time REAL,PRIMARY KEY(platform,item));
         CREATE INDEX IF NOT EXISTS media_budget_time ON media_budget(platform,time);
         ''')
+        c.execute('BEGIN IMMEDIATE')  # Serialize migrations across simultaneous initializers.
         columns={r[1] for r in c.execute('PRAGMA table_info(jobs)')}
         if 'preferences' not in columns:c.execute("ALTER TABLE jobs ADD COLUMN preferences TEXT NOT NULL DEFAULT '{}'")
         columns={r[1] for r in c.execute('PRAGMA table_info(files)')}
+        if 'force_document' not in columns:
+            c.execute('ALTER TABLE files ADD COLUMN force_document INTEGER NOT NULL DEFAULT 0')
+        if 'supports_streaming' not in columns:
+            c.execute('ALTER TABLE files ADD COLUMN supports_streaming INTEGER NOT NULL DEFAULT 0')
         if 'link_retention_until' not in columns:c.execute('ALTER TABLE files ADD COLUMN link_retention_until REAL NOT NULL DEFAULT 0')
 
 def get_setting(key, default=None):

@@ -264,7 +264,8 @@ class RunnerTests(unittest.TestCase):
                 patch.object(self.yt.shutil, 'which', return_value='/synthetic/ffmpeg' if ffmpeg else None), \
                 patch.object(FFmpegMergerPP, 'available', new_callable=PropertyMock, return_value=ffmpeg), \
                 patch.object(FFmpegMergerPP, 'can_merge', return_value=ffmpeg), \
-                patch.object(FFmpegMergerPP, 'run_ffmpeg_multiple_files', merge):
+                patch.object(FFmpegMergerPP, 'run_ffmpeg_multiple_files', merge), \
+                patch.object(self.yt.video, 'telegram_playback', side_effect=Path):
             result = self.yt.run({'platform': 'youtube', 'root': str(self.root / 'youtube'),
                                   'url': 'https://youtu.be/Abc123_X-yZ'})
         return selected, merge_args, result

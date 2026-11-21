@@ -15,7 +15,7 @@
 
 ### Changed
 
-- yt-dlp 下載的 MKV 在傳送前轉成 H.265／hvc1 MP4，AAC 音訊、faststart 並驗證影音屬性，失敗保留原檔並回報。部署須提供 FFmpeg（含 libx265）及 ffprobe，轉碼新增 CPU／暫存需求，原始 MKV 需另行清理。
+- 各平台可直接播放的 MP4 只送一次。其他支援的影片會產生 H.265 MP4 播放版本，並另外以文件傳送原檔。Bot 分別記錄交付結果，完整交付後依現有期限清理。轉檔需要 FFmpeg（含 libx265）及 ffprobe。
 
 - 記錄最高畫質 YouTube 輸出 MKV／VP9 與 Telegram 影片傳送的相容性問題，以及本機 H.264 MP4 轉換驗證結果，供後續決定自動處理策略。
 

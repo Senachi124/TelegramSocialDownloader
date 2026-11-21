@@ -214,6 +214,8 @@ class RuntimeTests(unittest.TestCase):
         job = self.job()
         preview = self.file(job, 'preview.mp4', supports_streaming=True)
         original = self.file(job, 'original.mp4', force_document=True)
+        for entry in (preview, original):
+            w.add_files(job, [{k: entry[k] for k in ('path', 'name', 'size')}])
         sent = []
         def record(method, data, files=None):
             if files:

@@ -222,6 +222,17 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(selected, ['hevc-higher'])
         self.assertEqual(result['code'], 0)
 
+    def test_tiktok_retry_selects_only_current_native_original(self):
+        folder = self.root / 'capture'
+        folder.mkdir()
+        (folder / '123_00_.webm').write_bytes(b'previous-format')
+        selected, result = self.select_tiktok_formats([
+            self.tiktok_format('vp9', codec='vp9', ext='webm', height=2160),
+            self.tiktok_format('avc', codec='avc1.64002a', height=720)])
+        self.assertEqual(selected, ['avc'])
+        self.assertEqual([f['name'] for f in result['files']], ['123_00_.mp4'])
+        self.assertEqual((folder / '123_00_.webm').read_bytes(), b'previous-format')
+
     def test_tiktok_falls_back_to_complete_hevc_without_h264_audio(self):
         selected, result = self.select_tiktok_formats([
             self.tiktok_format('silent-avc', acodec='none'),
@@ -264,11 +275,28 @@ class RunnerTests(unittest.TestCase):
                 patch.object(self.yt.shutil, 'which', return_value='/synthetic/ffmpeg' if ffmpeg else None), \
                 patch.object(FFmpegMergerPP, 'available', new_callable=PropertyMock, return_value=ffmpeg), \
                 patch.object(FFmpegMergerPP, 'can_merge', return_value=ffmpeg), \
-                patch.object(FFmpegMergerPP, 'run_ffmpeg_multiple_files', merge), \
-                patch.object(self.yt.video, 'telegram_playback', side_effect=Path):
+                patch.object(FFmpegMergerPP, 'run_ffmpeg_multiple_files', merge):
             result = self.yt.run({'platform': 'youtube', 'root': str(self.root / 'youtube'),
                                   'url': 'https://youtu.be/Abc123_X-yZ'})
         return selected, merge_args, result
+
+    def test_native_mp4_wins_over_higher_webm_and_incompatible_audio(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('vp9', vcodec='vp9', acodec='opus', ext='webm', height=2160),
+            self.tiktok_format('mp4-opus', vcodec='avc1.64002a', acodec='opus', height=1440),
+            self.tiktok_format('native', vcodec='hvc1.1.6.L120', acodec='mp4a.40.2', height=1080),
+        ])
+        self.assertEqual((selected, merges, result['code']), (['native'], [], 0))
+
+    def test_native_split_uses_aac_even_with_higher_bitrate_opus(self):
+        selected, merges, result = self.select_youtube_formats([
+            self.tiktok_format('webm', vcodec='vp9', acodec='opus', ext='webm', height=2160),
+            self.tiktok_format('avc', vcodec='avc1.64002a', acodec='none', height=1080),
+            self.tiktok_format('opus', vcodec='none', acodec='opus', ext='webm', abr=256),
+            self.tiktok_format('aac', vcodec='none', acodec='mp4a.40.2', ext='m4a', abr=128),
+        ])
+        self.assertEqual((selected, result['code']), (['avc', 'aac'], 0))
+        self.assertEqual(merges, [['-c', 'copy', '-map', '0:v:0', '-map', '1:a:0']])
 
     def test_youtube_prefers_higher_quality_split_h264_over_lower_complete(self):
         selected, merges, result = self.select_youtube_formats([

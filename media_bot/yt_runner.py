@@ -13,8 +13,8 @@ from yt_dlp.networking.impersonate import ImpersonateTarget
 from . import core as c
 from . import download_size,media_preferences,video
 
-# Highest available quality first; H.264 is a tie preference, never a resolution cap.
-TIKTOK_FORMAT = 'best[protocol=https]/best[protocol=http]'
+# Complete HTTPS media first, then HTTP, with native MP4 preferred on each transport.
+TIKTOK_FORMAT = media_preferences.selector({}, direct=True, prefer_mp4=True)
 QUALITY_SORT = ['res','fps','hdr','vcodec:h264','acodec:aac']
 
 class StopCapture(BaseException):pass
@@ -50,6 +50,26 @@ def _prepare_partial(path, info):
     finally:
         temporary.unlink(missing_ok=True)
 
+def _final_video(root, info, video_id, *, allow_legacy_name):
+    # A retry can leave several original formats and historical playback copies
+    # in the job directory. Only register the output selected by this attempt.
+    def eligible(path):
+        return (path.parent == root and path.stem == f'{video_id}_00_'
+                and path.suffix.lower() in video.VIDEO_DEMUXERS
+                and not path.is_symlink() and path.is_file())
+
+    downloads = info.get('requested_downloads') or []
+    if len(downloads) == 1 and downloads[0].get('filepath'):
+        reported = Path(downloads[0]['filepath'])
+        path = reported.parent.resolve() / reported.name
+        return path if eligible(path) else None
+    if allow_legacy_name and not downloads:
+        candidates = [path for path in root.iterdir() if eligible(path)]
+        if len(candidates) == 1:
+            return candidates[0]
+    return None
+
+
 def run(payload):
     root=Path(payload['root']).resolve();root.mkdir(parents=True,exist_ok=True)
     platform=payload.get('platform','tiktok')
@@ -57,7 +77,6 @@ def run(payload):
     preferences=payload.get('preferences') or {}
     cookies=payload.get('cookies',{})
     video_id=None
-    final_path=None
     stream_bytes={}
     result={'engine':'yt-dlp','code':1,'retry_at':0,'auth_required':False,
             'files':[],'failure':'','http_errors':[],'cookie_used':bool(cookies),
@@ -91,7 +110,7 @@ def run(payload):
             stream_bytes.clear()
             streams=info.get('requested_formats') or [info]
             if youtube and preferences.get('prefer_hdr',True) and not any(f.get('dynamic_range') not in (None,'SDR') for f in streams if f.get('vcodec')!='none'):
-                media_preferences.record_notice(result,'來源未提供可識別的 HDR 版本，已採用可用畫質。')
+                media_preferences.record_notice(result,'所選下載版本沒有可識別的 HDR 標記。')
             if (cap:=media_preferences.quality(preferences)) and int(info.get('height') or 0)>cap:
                 media_preferences.record_notice(result,'來源沒有偏好的畫質，已改為下載最接近的可用畫質。')
             # Only exact declared sizes reject up front, never bitrate estimates.
@@ -134,7 +153,7 @@ def run(payload):
             if youtube:download_size.check(sum(stream_bytes.values()))
     params={'logger':Logger(),'quiet':True,'noprogress':True,'noplaylist':True,
             'socket_timeout':30,'retries':2,'extractor_retries':2,
-            'format':media_preferences.selector(preferences,direct=True),
+            'format':media_preferences.selector(preferences,direct=True,prefer_mp4=True),
             'format_sort':media_preferences.sort(preferences),'format_sort_force':True,'progress_hooks':[progress],
             'outtmpl':str(root/'%(id)s_00_.%(ext)s'),'overwrites':False,
             'cachedir':False,'usenetrc':False,'cookiefile':None}
@@ -144,8 +163,8 @@ def run(payload):
             return 'Live broadcast not supported'
         return None
     if youtube:
-        # Select original quality first; incompatible video results are converted after download.
-        params.update(format=media_preferences.selector(preferences,merge=bool(shutil.which('ffmpeg'))),
+        # Use native MP4 video and AAC audio when the provider offers them.
+        params.update(format=media_preferences.selector(preferences,merge=bool(shutil.which('ffmpeg')),prefer_mp4=True),
                       match_filter=reject_live)
     else:
         params['impersonate']=ImpersonateTarget.from_str('chrome')
@@ -168,29 +187,19 @@ def run(payload):
             info=downloader.extract_info(url,download=True,ie_key='Youtube' if youtube else 'TikTok')
             result['code']=int(not info or bool(result.get('error')) or (youtube and info.get('id')!=video_id)
                                or result['failure']=='live_unsupported')
-            if youtube and not result['code']:
-                downloads=info.get('requested_downloads') or []
-                if len(downloads)==1 and downloads[0].get('filepath'):
-                    reported = Path(downloads[0]['filepath'])
-                    # The configured media root may be reached through a directory
-                    # alias. Keep the leaf name intact for the symlink check below.
-                    final_path = reported.parent.resolve() / reported.name
+            if not result['code']:
+                path = _final_video(root, info, info.get('id'), allow_legacy_name=not youtube)
+                if path is not None:
+                    size = path.stat().st_size
+                    download_size.check(size)
+                    if size:
+                        result['files'].append({'path':str(path),'name':path.name,'size':size})
     except download_size.DownloadTooLarge:download_size.mark(result)
     except StopCapture:pass
     except Exception as error:
         result['exception']=type(error).__name__
         if not result['failure']:result['failure']='extractor_error'
     finally:
-        for path in sorted(root.iterdir()):
-            if youtube and (path!=final_path or path.stem!=f'{video_id}_00_'):continue
-            if video.is_playback_derivative(path):continue
-            if path.is_file() and not path.is_symlink() and path.suffix.lower() in video.VIDEO_DEMUXERS:
-                size=path.stat().st_size
-                if size>download_size.limits.MAX_DOWNLOAD_BYTES:
-                    download_size.mark(result);continue
-                if not youtube or size:
-                    result['files'].append({'path':str(path),'name':path.name,'size':size})
-        video.prepare_playback_files(result)
         if not result['files']:result['code']=1
         if result['code']:
             if result.get('oversize'):result['failure']='too_large'

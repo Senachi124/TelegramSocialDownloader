@@ -94,12 +94,12 @@ sequenceDiagram
 | 內容類型 | 實際引擎與相關模組 |
 | --- | --- |
 | Instagram | `gallery_runner` → gallery-dl + `instagram_web_gallery`／`instagram_web_client`；`instagram_policy` 限制 API 請求。 |
-| TikTok 影片貼文 | `gallery_runner` → `yt_runner` → yt-dlp；最高畫質完整 HTTPS 影音，H.264僅同畫質優先；沒有時備援HTTP。 |
+| TikTok 影片貼文 | `gallery_runner` → `yt_runner` → yt-dlp；完整 HTTPS 影音優先，相容 MP4 優先；沒有時備援HTTP。 |
 | YouTube 影片／Shorts | `core` 將單片網址統一為 watch URL → `gallery_runner` → `yt_runner` → yt-dlp。依快照選HDR／畫質；有FFmpeg可合併最佳影音，不重新編碼。獨立佇列、配額與冷卻，預設匿名，可選外部YouTube域Cookie。 |
 | TikTok 照片／限時動態 | `gallery_runner` → gallery-dl + `tiktok` adapter。 |
 | X 貼文 | `gallery_runner` → `twitter_runner` → twscrape；媒體另由 HTTP 客戶端串流下載。 |
 
-TikTok完整影音按畫質優先，H.264同畫質優先；各平台透過 video.prepare_playback_files 處理已下載的影片。相容 MP4 直接交付；需要轉換的影片分別登記播放版本和原檔，原檔使用文件傳送。各自的收據決定完成狀態與清理資格。所有平台套用單一媒體2000 MB下載限制；分離影音合計但不重算合併副本。
+YouTube 會優先選用相容的原生 MP4，按設定選擇可用畫質。Bot 直接傳送下載的原片，分離影音只合併串流，不重新壓製。所有平台套用單一媒體2000 MB下載限制；分離影音合計但不重算合併副本。
 
 進入 TikTok 媒體下載前，runner 先取得配額，再核對輸出旁的 `.format.json`（影片／格式 ID、編碼、容器、尺寸、幀率及大小；不含 URL／Cookie）。紀錄相符才使用 HTTP Range 續傳；紀錄缺失、損壞或不同時，將原 `.part` 保留到同目錄唯一的 `.part.preserved-*` 名稱，原子更新格式紀錄後從頭下載。保留檔不列入傳送或已完成媒體清理；已完成檔直接沿用，配額阻擋時不修改 partial／marker。符號連結或非一般檔案的 partial／marker 會拒絕處理。
 

@@ -134,7 +134,12 @@ def main():
         job.DownloadJob.handle_url=handle_url
         job.DownloadJob.download=original_download
         restore_adapter()
-        for f in [*ordered,*sorted(set(root.iterdir())-set(ordered))]:
+        # Prefer this capture's selected files. A resumed directory may also
+        # contain a previous representation of the same gallery item.
+        files=ordered
+        if not ordered or result['code']:
+            files=[*ordered,*sorted(set(root.iterdir())-set(ordered))]
+        for f in files:
             if video.is_playback_derivative(f):
                 continue
             extension = f.suffix.lower()
@@ -156,7 +161,6 @@ def main():
                 if not result['failure']:
                     result['failure']=('login_required' if 401 in result['http_errors'] else 'forbidden' if 403 in result['http_errors'] else 'unavailable' if 404 in result['http_errors'] else 'extractor_error' if result.get('error') else 'empty_unconfirmed')
             else:result['failure']=''
-        video.prepare_playback_files(result)
         result['finished']=time.time()
         result.pop('_story_positions',None);result.pop('_story_count',None)
         tmp=root/'result.tmp';tmp.write_text(json.dumps(result));tmp.replace(root/'result.json')

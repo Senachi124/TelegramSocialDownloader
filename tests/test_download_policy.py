@@ -97,6 +97,32 @@ class PreferenceTests(unittest.TestCase):
             self.assertEqual(saved['indices'],[2])
             self.assertTrue(all(media_preferences.include(chosen,n,total=3) for n in (1,2,3)))
 
+    def test_native_preference_respects_quality_band_and_protocol(self):
+        from yt_dlp import YoutubeDL
+        def select(formats, **options):
+            prefs = {'quality':'720'}
+            with YoutubeDL(dict(quiet=True, format=media_preferences.selector(prefs, prefer_mp4=True, **options),
+                                format_sort=media_preferences.sort(prefs), format_sort_force=True)) as ydl:
+                info = ydl.process_ie_result(dict(id='test', title='test', formats=[dict(f) for f in formats]), download=False)
+                return info['format_id']
+        native = dict(format_id='native', url='https://example.test/a.mp4', ext='mp4', vcodec='h264',
+                      acodec='aac', width=1920, height=1080)
+        other = dict(format_id='other', url='https://example.test/b.webm', ext='webm', vcodec='vp9',
+                     acodec='opus', width=1280, height=720)
+        self.assertEqual(select([native, other]), 'other')
+        self.assertEqual(select([{**native, 'url':'http://example.test/a.mp4', 'height':720}, other],
+                                direct=True), 'other')
+
+    def test_instagram_known_native_alternative_and_unknown_metadata_fallback(self):
+        native = {'url':'https://example.test/small.mp4', 'video_codec':'avc1.640020',
+                  'audio_codec':'aac', 'height':720, 'width':1280}
+        larger = {'url':'https://example.test/large.webm', 'vcodec':'vp9',
+                  'acodec':'opus', 'height':1080, 'width':1920}
+        def chosen(options):
+            return instagram_quality.prepare_post({'video_versions':options}, {})['video_versions'][-1]['url']
+        self.assertEqual(chosen([larger,native]), native['url'])
+        self.assertEqual(chosen([larger,{**native, 'audio_codec':''}]), larger['url'])
+
     def test_numeric_quality_uses_nearest_available_fallback(self):
         from yt_dlp import YoutubeDL
         def fmt(height):return dict(format_id=str(height),url=f'https://example.test/{height}.mp4',
@@ -183,6 +209,28 @@ class DownloadCeilings(unittest.TestCase):
             result=json.loads((root/'result.json').read_text())
             self.assertEqual(bool(result.get('preference_notice')),notice)
 
+    def test_gallery_retry_returns_selected_native_representation_once(self):
+        from gallery_dl import job
+        root=self.root/'retry'
+        root.mkdir()
+        old=root/'12.webm'
+        current=root/'12.mp4'
+        old.write_bytes(b'old')
+        current.write_bytes(b'native')
+        def run():
+            fixture=Mock()
+            fixture.pathfmt.realpath=str(current)
+            job.DownloadJob.handle_url(fixture,'https://cdn.cdninstagram.com/video',{'extension':'mp4'})
+            return 0
+        payload=dict(platform='instagram',root=str(root),url='https://instagram.com/p/test/',mode='post',cookies={})
+        with patch.object(job.DownloadJob,'handle_url',return_value=None), \
+                patch.object(job.DownloadJob,'run',side_effect=run), \
+                patch('sys.stdin',io.StringIO(json.dumps(payload))):
+            gallery_runner.main()
+        files=json.loads((root/'result.json').read_text())['files']
+        self.assertEqual([f['name'] for f in files],[current.name])
+        self.assertEqual(old.read_bytes(),b'old')
+
     def test_header_range_total_and_exact_boundary(self):
         self.assertEqual(download_size.declared({'Content-Length':'8'}),8)
         download_size.check(8)
@@ -190,9 +238,7 @@ class DownloadCeilings(unittest.TestCase):
             with self.assertRaises(download_size.DownloadTooLarge):download_size.declared(headers)
         with self.assertRaises(download_size.DownloadTooLarge):download_size.check(9)
 
-    def test_gallery_registers_playback_and_original_without_rescanning_generated_files(self):
-        from media_bot import video
-
+    def test_gallery_returns_only_original_and_ignores_legacy_playback_files(self):
         root = self.root / 'gallery'
         root.mkdir()
         original = root / '12.webm'
@@ -203,13 +249,10 @@ class DownloadCeilings(unittest.TestCase):
         payload = dict(platform='instagram', root=str(root), cookies={},
                        url='https://instagram.com/p/fixture/', mode='post')
         with patch('gallery_dl.job.DownloadJob.run', return_value=0), \
-                patch.object(video, 'telegram_playback', return_value=preview) as convert, \
                 patch('sys.stdin', io.StringIO(json.dumps(payload))):
             gallery_runner.main()
-        convert.assert_called_once_with(original)
         files = json.loads((root / 'result.json').read_text())['files']
-        self.assertEqual([(f['name'], f.get('force_document', False)) for f in files],
-                         [(preview.name, False), (original.name, True)])
+        self.assertEqual([f['name'] for f in files], [original.name])
 
     def test_gallery_unknown_length_stream_stops_before_excess_chunk(self):
         import requests

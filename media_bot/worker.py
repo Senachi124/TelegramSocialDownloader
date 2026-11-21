@@ -46,6 +46,9 @@ def _local_file_payload(data,files):
     key,item=next(iter(files.items()))
     if key not in ('document','video','audio','animation','photo','voice','video_note'):
         return None
+    # Telegram honors disable_content_type_detection only on multipart uploads.
+    if key == 'document' and data.get('disable_content_type_detection'):
+        return None
     stream=item[1]
     try:
         path=c.safe_file(stream.name).resolve(strict=True)
@@ -70,7 +73,7 @@ def telegram(method,data,files=None):
             if local is not None:
                 r=_transport.session.post(url,json=local,timeout=(5,limits.MEDIA_SEND_TIMEOUT),allow_redirects=False)
             else:
-                fields={k:str(v) for k,v in data.items()}
+                fields={k:json.dumps(v) if isinstance(v,bool) else str(v) for k,v in data.items()}
                 fields.update(files);body=MultipartEncoder(fields=fields)
                 r=_transport.session.post(url,data=body,headers={'Content-Type':body.content_type},timeout=(5,limits.MEDIA_SEND_TIMEOUT),allow_redirects=False)
         else:
@@ -198,13 +201,28 @@ def disk_ok():
     size=sum(p.stat().st_size for p in (c.DATA/'media').rglob('*') if p.is_file())
     if size>=3*1024**3:raise ValueError('Bot 暫存已達 3 GiB，請檢查未交付工作')
 
+def _register_files(db, job_id, files):
+    db.executemany(
+        """INSERT INTO files(job,path,name,size,force_document,supports_streaming) VALUES (?,?,?,?,?,?)
+           ON CONFLICT(job,path) DO UPDATE SET name=excluded.name, size=excluded.size,
+             force_document=excluded.force_document, supports_streaming=excluded.supports_streaming
+           WHERE files.state='pending'""",
+        [(job_id, f['path'], f['name'], f['size'], bool(f.get('force_document')),
+          bool(f.get('supports_streaming'))) for f in files],
+    )
+
+
 def add_files(job,files):
     with c.db() as db:
-        for f in files:db.execute('INSERT OR IGNORE INTO files(job,path,name,size) VALUES (?,?,?,?)',(job['id'],f['path'],f['name'],f['size']))
+        _register_files(db, job['id'], files)
 
 def _oversized_download(root):
     # Never total the directory: split video/audio and their merged output coexist.
     for path in root.rglob('*'):
+        # FFmpeg bounds its temporary output and the converter checks its exact
+        # size before publication. Let it fall back to the valid original.
+        if video.is_playback_scratch(path):
+            continue
         try:
             if not path.is_symlink() and path.is_file() and path.stat().st_size>limits.MAX_DOWNLOAD_BYTES:
                 return True
@@ -223,14 +241,17 @@ def capture(job,cookies):
     root=c.DATA/'media'/job['id']
     if '_batch_position' in job:root=root/('item-'+str(job['_batch_position']))
     root.mkdir(parents=True,exist_ok=True)
+    video.cleanup_playback_scratch(root)
     result_path=root/'result.json';result_path.unlink(missing_ok=True)
     runner='media_bot.gallery_runner'
-    process=subprocess.Popen([sys.executable,'-m',runner],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,text=True)
+    deadline=time.monotonic()+1800
+    process=subprocess.Popen([sys.executable,'-m',runner],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,start_new_session=True,text=True,
+                             env={**os.environ,'MEDIA_BOT_CAPTURE_DEADLINE':str(deadline)})
     try:
         snapshot=json.loads(job.get('preferences') or '{}')
         preferences=snapshot.get(job['platform'],{}) if isinstance(snapshot,dict) else {}
         process.stdin.write(json.dumps({'platform':job['platform'],'mode':job['mode'],'url':job['url'],'root':str(root),'cookies':cookies,'preferences':preferences}));process.stdin.close()
-        deadline=time.monotonic()+1800
         while process.poll() is None:
             if _oversized_download(root):
                 with contextlib.suppress(ProcessLookupError):os.killpg(process.pid,signal.SIGTERM)
@@ -251,6 +272,7 @@ def capture(job,cookies):
         if process.poll() is None:
             with contextlib.suppress(ProcessLookupError):os.killpg(process.pid,signal.SIGKILL)
             process.wait()
+        video.cleanup_playback_scratch(root)
 
 def download(job):
     if cancelled(job):return False
@@ -387,7 +409,7 @@ def process_batch(job):
         # Files and completion are committed together. A crash before this
         # transaction safely resumes from the item's own download directory.
         with c.db() as db:
-            for f in result['files']:db.execute('INSERT OR IGNORE INTO files(job,path,name,size) VALUES (?,?,?,?)',(job['id'],f['path'],f['name'],f['size']))
+            _register_files(db, job['id'], result['files'])
             db.execute('UPDATE batch_items SET state=?,error=? WHERE job=? AND position=?',('failed' if reason else 'done',reason,job['id'],item['position']))
     except c.RateLimited as error:
         c.update(job['id'],state='cooldown',retry_at=error.until);status(job,'平台冷卻中，稍後自動續作');return
@@ -442,9 +464,24 @@ def deliver(job):
     # Telegram mobile/forwarded messages rely on sender-supplied dimensions.
     # Probe once per delivery; unknown dimensions fall back to an original file.
     dimensions={f['id']:video.attributes(c.safe_file(f['path'])) for f in files
-                if f['state']=='pending' and Path(f['path']).suffix.lower()=='.mp4' and f['size']<=limits.telegram_file_limit()}
+                if f['state']=='pending' and not f['force_document'] and Path(f['path']).suffix.lower()=='.mp4' and f['size']<=limits.telegram_file_limit()}
+    for f in files:
+        if f['supports_streaming'] and dimensions.get(f['id']):
+            dimensions[f['id']]['supports_streaming'] = True
+
+    def delivery_kind(f):
+        if not f['force_document']:
+            if dimensions.get(f['id']):
+                return 'video'
+            if Path(f['path']).suffix.lower() in ('.jpg', '.jpeg', '.png') and f['size'] < 9 * 1024**2:
+                return 'photo'
+        return 'document'
+
+    def album_eligible(f):
+        return (f['state'] == 'pending' and f['size'] < limits.LARGE_UPLOAD_THRESHOLD
+                and delivery_kind(f) in ('photo', 'video'))
+
     # Telegram albums accept 2–10 photo/video entries. Preserve source order.
-    pending=[]
     def album(batch):
         if len(batch)<2 or cancelled(job):return
         _mark_file_states(batch,'uncertain')
@@ -454,7 +491,7 @@ def deliver(job):
                 for n,f in enumerate(batch):
                     name='file'+str(n);path=c.safe_file(f['path']);stream=stack.enter_context(path.open('rb'))
                     attachments[name]=(f['name'],stream,mimetypes.guess_type(f['name'])[0] or 'application/octet-stream')
-                    item={'type':'video' if path.suffix.lower()=='.mp4' else 'photo','media':'attach://'+name}
+                    item={'type':delivery_kind(f),'media':'attach://'+name}
                     if item['type']=='video':item.update(dimensions[f['id']])
                     media.append(item)
                 results=telegram('sendMediaGroup',{'chat_id':job['chat'],'media':json.dumps(media)},attachments)
@@ -472,24 +509,26 @@ def deliver(job):
         except Exception:
             for f in batch:f['state']='uncertain'
             _mark_delivery_uncertain(job);raise
-    try:
-        candidates=[f for f in files if f['state'] not in ('sent','expired')]
-        all_album=all(f['state']=='pending' and f['size']<limits.LARGE_UPLOAD_THRESHOLD and ((Path(f['path']).suffix.lower()=='.mp4' and bool(dimensions.get(f['id']))) or (Path(f['path']).suffix.lower() in ('.jpg','.jpeg','.png') and f['size']<9*1024**2)) for f in candidates)
-        # In a batch, group eligible runs even if another item requires a
-        # document or link fallback; those files are delivered individually.
-        for f in candidates if all_album or job.get('mode')=='batch' else []:
-            ext=Path(f['path']).suffix.lower()
-            eligible=f['state']=='pending' and f['size']<limits.LARGE_UPLOAD_THRESHOLD and ((ext=='.mp4' and f['size']<=limits.telegram_file_limit() and bool(dimensions.get(f['id']))) or (ext in ('.jpg','.jpeg','.png') and f['size']<9*1024**2))
-            if not eligible:
-                album(pending);pending=[];continue
-            pending.append(f)
-            if len(pending)==10:album(pending);pending=[]
-        album(pending)
-    except Exception:
-        status(job,'媒體分組傳送尚未完成，檔案保留待確認／重試');return
+    candidates=[f for f in files if f['state'] not in ('sent','expired')]
+    albums={}
+    if job.get('mode')=='batch' or all(album_eligible(f) for f in candidates):
+        # Schedule eligible runs at their position in the file list, so an
+        # earlier original document is sent before any later album.
+        run=[]
+        for candidate in candidates:
+            if not album_eligible(candidate):
+                run=[]
+                continue
+            if len(run)==10:run=[]
+            run.append(candidate)
+            if len(run)==2:albums[run[0]['id']]=run
     for f in files:
         if cancelled(job):return
-        if f['state'] in ('sent','expired','too_large'):continue
+        if f['id'] in albums:
+            try:album(albums[f['id']])
+            except Exception:
+                status(job,'媒體分組傳送尚未完成，檔案保留待確認／重試');return
+        if f['state'] in ('sent','expired','too_large','preview_failed'):continue
         if f['state']=='uncertain':
             c.update(job['id'],state='partial');status(job,'部分媒體傳送結果未明，請管理員確認後重試');return
         path=c.safe_file(f['path'])
@@ -504,13 +543,25 @@ def deliver(job):
                     continue
                 result=telegram('sendMessage',{'chat_id':job['chat'],'text':f['name']+'\n'+reason+'\n檔案及連結保留 2 小時：'+links.create(f['id'])})
             else:
-                ext=path.suffix.lower();kind='video' if ext=='.mp4' and dimensions.get(f['id']) else ('photo' if ext in ('.jpg','.jpeg','.png') and f['size']<9*1024**2 else 'document')
+                kind=delivery_kind(f)
+                if f['supports_streaming'] and kind!='video':
+                    _mark_file_states([f],'preview_failed')
+                    f['state']='preview_failed'
+                    continue
                 data={'chat_id':job['chat']}
+                mime_type=mimetypes.guess_type(f['name'])[0] or 'application/octet-stream'
                 if kind=='video':data.update(dimensions[f['id']])
+                if f['force_document']:
+                    data['disable_content_type_detection']=True
+                    mime_type='application/octet-stream'
                 with path.open('rb') as stream:
-                    try:result=telegram('send'+kind.title(),data,{kind:(f['name'],stream,mimetypes.guess_type(f['name'])[0] or 'application/octet-stream')})
+                    try:result=telegram('send'+kind.title(),data,{kind:(f['name'],stream,mime_type)})
                     except TelegramError as e:
                         if e.code!=400 or kind=='document':raise
+                        if f['supports_streaming']:
+                            _mark_file_states([f],'preview_failed')
+                            f['state']='preview_failed'
+                            continue
                         stream.seek(0);result=telegram('sendDocument',{'chat_id':job['chat']},{'document':(f['name'],stream,'application/octet-stream')})
             if not isinstance(result,dict) or not result.get('message_id'):raise ValueError('Missing Telegram receipt')
             _save_file_receipts([(f['id'],result['message_id'])])
@@ -522,10 +573,16 @@ def deliver(job):
         except Exception:
             _mark_delivery_uncertain(job);status(job,'傳送結果未明，檔案保留；請管理員確認後重試');return
     if cancelled(job):return
-    partial=c.get_setting('partial:'+job['id'],False)
+    preview_failed=any(f['state']=='preview_failed' for f in files)
+    partial=preview_failed or c.get_setting('partial:'+job['id'],False)
     c.update(job['id'],state='partial' if partial else 'completed',delivered=time.time())
-    from . import preferences
-    status(job,((('部分下載成功，已傳送可用內容。'+c.get_setting('partial_reason:'+job['id'],'')) if partial else f'完成，共 {len(files)} 個檔案') if files else (('沒有可傳送的媒體。'+c.get_setting('partial_reason:'+job['id'],'')) if partial else '沒有目前可見的限時動態／媒體'))+preferences.notice_text(job['id']))
+    if partial:
+        message='部分下載成功，已傳送可用內容。' if files else '沒有可傳送的媒體。'
+        message+=c.get_setting('partial_reason:'+job['id'],'')
+        if preview_failed:message+='播放版無法以影片傳送。'
+    else:
+        message=f'完成，共 {len(files)} 個檔案' if files else '沒有目前可見的限時動態／媒體'
+    status(job,message+preferences.notice_text(job['id']))
 
 def platform_loop(platform,stop=None):
     stop=stop or threading.Event()
@@ -622,7 +679,22 @@ def main():
         for sig,handler in old_handlers.items():signal.signal(sig,handler)
 
 
+def _recover_playback_scratch():
+    # Recover killed encodes before disk_ok() can block the next capture. Only
+    # generated job and batch directories can own encoder staging files.
+    for job_dir in (c.DATA/'media').iterdir():
+        if (not re.fullmatch(r'[0-9a-f]{16}', job_dir.name)
+                or job_dir.is_symlink() or not job_dir.is_dir()):
+            continue
+        video.cleanup_playback_scratch(job_dir)
+        for item_dir in job_dir.glob('item-*'):
+            if (re.fullmatch(r'item-[0-9]+', item_dir.name)
+                    and not item_dir.is_symlink() and item_dir.is_dir()):
+                video.cleanup_playback_scratch(item_dir)
+
+
 def _run_main():
+    _recover_playback_scratch()
     # Uncertain sends stay preserved and never get automatically duplicated.
     with c.db() as db:
         db.execute("UPDATE jobs SET state='partial',message='上次傳送結果未明，已保留檔案' WHERE id IN (SELECT job FROM files WHERE state='uncertain')")

@@ -108,9 +108,18 @@ class Features(unittest.TestCase):
         with patch.dict(os.environ,MEDIA_BOT_LOCAL_FILE_UPLOADS='1'),patch.object(config,'token',return_value='123:synthetic'),patch.object(w._transport,'session',session,create=True):
             with Path(file['path']).open('rb') as stream:w.telegram('sendDocument',{'chat_id':123},{'document':('file',stream,'application/octet-stream')})
             kwargs=session.post.call_args.kwargs
-            self.assertEqual(kwargs['json']['document'],Path(file['path']).as_uri());self.assertFalse(kwargs['allow_redirects']);self.assertFalse(session.trust_env)
+            self.assertEqual(kwargs['json']['document'],Path(file['path']).resolve().as_uri());self.assertFalse(kwargs['allow_redirects']);self.assertFalse(session.trust_env)
             outside=self.root/'outside';outside.write_text('fixture')
             with outside.open('rb') as stream:self.assertIsNone(w._local_file_payload({}, {'document':('file',stream,'application/octet-stream')}))
+    def test_original_document_requires_multipart_even_with_local_path_uploads(self):
+        file = self.file(self.job())
+        path = Path(file['path'])
+        data = {'chat_id': 123, 'disable_content_type_detection': True}
+        with patch.dict(os.environ, MEDIA_BOT_LOCAL_FILE_UPLOADS='1'), path.open('rb') as stream:
+            payload = w._local_file_payload(data, {'document': (path.name, stream, 'application/octet-stream')})
+            self.assertIsNone(payload)
+            self.assertIsNone(w._local_file_payload(data, {'document': ('原片.mov', stream, 'application/octet-stream')}))
+
     def test_local_api_file_uri_roundtrips_reserved_and_unicode_filename(self):
         from urllib.parse import urlsplit,unquote
         job=self.job();file=self.file(job)
@@ -121,7 +130,7 @@ class Features(unittest.TestCase):
         uri=urlsplit(payload['document'])
         self.assertEqual(uri.scheme,'file');self.assertEqual(uri.netloc,'')
         self.assertEqual(uri.query,'');self.assertEqual(uri.fragment,'')
-        self.assertEqual(unquote(uri.path),str(path))
+        self.assertEqual(unquote(uri.path),str(path.resolve()))
 
     def test_capability_server_ranges_expiry_revocation_and_no_plain_tokens(self):
         job=self.job();file=self.file(job);Path(file['path']).write_bytes(b'abcdefgh')

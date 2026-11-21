@@ -6,7 +6,7 @@ import sys
 import time
 from email.utils import parsedate_to_datetime
 from . import core as c
-from . import download_size,media_preferences
+from . import download_size,media_preferences,video
 
 class StopDownload(BaseException):pass
 
@@ -101,11 +101,12 @@ def main():
                 position=result.get('_story_positions',{}).get(str(data.get('id')),0)
                 total=result.get('_story_count')
             elif isinstance(data.get('imagePost'),dict):total=len(data['imagePost'].get('images') or [])
-        video=bool(data.get('video_url') or data.get('_ytdl_manifest') or data.get('extension') in ('mp4','webm','mov'))
-        if not media_preferences.include(preferences,position,video=video,total=total,
+        extension = '.' + str(data.get('extension', '')).lower()
+        is_video = bool(data.get('video_url') or data.get('_ytdl_manifest') or extension in video.VIDEO_DEMUXERS)
+        if not media_preferences.include(preferences,position,video=is_video,total=total,
                                          has_images=data.get('_preference_has_images'),
                                          image_positions=data.get('_preference_image_indices'),result=result):return
-        if platform=='instagram' and video:
+        if platform=='instagram' and is_video:
             if data.get('_ytdl_manifest'):
                 # A failed manifest must not silently bypass the selected HDR variant.
                 data.pop('_fallback',None)
@@ -134,7 +135,10 @@ def main():
         job.DownloadJob.download=original_download
         restore_adapter()
         for f in [*ordered,*sorted(set(root.iterdir())-set(ordered))]:
-            if f.is_file() and not f.is_symlink() and f.suffix.lower() in ('.mp4','.webm','.mov','.jpg','.jpeg','.png','.webp','.gif'):
+            if video.is_playback_derivative(f):
+                continue
+            extension = f.suffix.lower()
+            if f.is_file() and not f.is_symlink() and (extension in video.VIDEO_DEMUXERS or extension in ('.jpg','.jpeg','.png','.webp','.gif')):
                 size=f.stat().st_size
                 if size>download_size.limits.MAX_DOWNLOAD_BYTES:download_size.mark(result)
                 else:result['files'].append({'path':str(f),'name':f.name,'size':size})
@@ -152,6 +156,7 @@ def main():
                 if not result['failure']:
                     result['failure']=('login_required' if 401 in result['http_errors'] else 'forbidden' if 403 in result['http_errors'] else 'unavailable' if 404 in result['http_errors'] else 'extractor_error' if result.get('error') else 'empty_unconfirmed')
             else:result['failure']=''
+        video.prepare_playback_files(result)
         result['finished']=time.time()
         result.pop('_story_positions',None);result.pop('_story_count',None)
         tmp=root/'result.tmp';tmp.write_text(json.dumps(result));tmp.replace(root/'result.json')

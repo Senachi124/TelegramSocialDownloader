@@ -99,7 +99,7 @@ sequenceDiagram
 | TikTok 照片／限時動態 | `gallery_runner` → gallery-dl + `tiktok` adapter。 |
 | X 貼文 | `gallery_runner` → `twitter_runner` → twscrape；媒體另由 HTTP 客戶端串流下載。 |
 
-TikTok完整影音按畫質優先，H.264同畫質優先；不合併、不轉碼。所有平台套用單一媒體2000 MB下載限制；分離影音合計但不重算合併副本。
+TikTok完整影音按畫質優先，H.264同畫質優先；各平台透過 video.prepare_playback_files 處理已下載的影片。相容 MP4 直接交付；需要轉換的影片分別登記播放版本和原檔，原檔使用文件傳送。各自的收據決定完成狀態與清理資格。所有平台套用單一媒體2000 MB下載限制；分離影音合計但不重算合併副本。
 
 進入 TikTok 媒體下載前，runner 先取得配額，再核對輸出旁的 `.format.json`（影片／格式 ID、編碼、容器、尺寸、幀率及大小；不含 URL／Cookie）。紀錄相符才使用 HTTP Range 續傳；紀錄缺失、損壞或不同時，將原 `.part` 保留到同目錄唯一的 `.part.preserved-*` 名稱，原子更新格式紀錄後從頭下載。保留檔不列入傳送或已完成媒體清理；已完成檔直接沿用，配額阻擋時不修改 partial／marker。符號連結或非一般檔案的 partial／marker 會拒絕處理。
 
@@ -138,6 +138,7 @@ stateDiagram-v2
     pending --> uncertain: 發送前先保存 checkpoint
     uncertain --> sent: 收到有效 message_id 並保存
     uncertain --> pending: Telegram 明確拒絕
+    uncertain --> preview_failed: 播放版本無法送為影片，繼續交付原檔
     uncertain --> uncertain: 逾時或缺少收據，保留待確認
     uncertain --> too_large: 超出介面上限且未設定URL，不發送
     sent --> expired: 父工作 completed 且達連結2小時或直接交付24小時期限
@@ -177,6 +178,8 @@ erDiagram
         INTEGER size
         TEXT state
         TEXT telegram_id
+        INTEGER force_document
+        INTEGER supports_streaming
         REAL link_retention_until
     }
     links {
@@ -250,7 +253,9 @@ YouTube 格式優先順序、stream copy 與驗證方式見 [YouTube 下載說�
 | `path` | 本機媒體路徑；讀取／清理時必須位於資料目錄的 `media` 下。 |
 | `name` | 傳送時使用的檔名。 |
 | `size` | 登記時的 byte 大小。 |
-| `state` | `pending`、`uncertain`、`sent`、`too_large` 或 `expired`。 |
+| `state` | `pending`、`uncertain`、`sent`、`too_large`、`preview_failed` 或 `expired`。 |
+| `force_document` | 需以獨立文件交付的原檔。舊紀錄預設為 0。 |
+| `supports_streaming` | 已驗證並啟用 faststart 的播放版本。舊紀錄預設為 0。 |
 | `telegram_id` | 成功傳送的 Telegram **message_id**，以文字保存；不是 Telegram file_id。 |
 
 `UNIQUE(job, path)` 防止同一工作重複登記同一路徑。批次檔案仍只 FK 到父工作，**沒有 batch item FK**；目錄中的 `item-<position>` 區分下載來源。

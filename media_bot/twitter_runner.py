@@ -18,7 +18,7 @@ from twscrape.accounts_pool import AccountsPool
 from twscrape.logger import logger
 import httpx
 from . import core as c, twitter
-from . import download_size
+from . import download_size, video
 
 
 class CaptureFailure(Exception):pass
@@ -135,5 +135,6 @@ def run(p):
     finally:
         models._write_dump=original_dump;logger.remove(sink)
         if result['retry_at'] or result['auth_required']:result['code']=1
+        video.prepare_playback_files(result)
         result['finished']=time.time()
         tmp=root/'result.tmp';tmp.write_text(json.dumps(result));tmp.replace(root/'result.json')

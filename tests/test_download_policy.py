@@ -190,6 +190,27 @@ class DownloadCeilings(unittest.TestCase):
             with self.assertRaises(download_size.DownloadTooLarge):download_size.declared(headers)
         with self.assertRaises(download_size.DownloadTooLarge):download_size.check(9)
 
+    def test_gallery_registers_playback_and_original_without_rescanning_generated_files(self):
+        from media_bot import video
+
+        root = self.root / 'gallery'
+        root.mkdir()
+        original = root / '12.webm'
+        preview = root / '12.webm.h265.mp4'
+        original.write_bytes(b'source')
+        preview.write_bytes(b'output')
+        (root / '12.stale.encoding.mp4').write_bytes(b'temp')
+        payload = dict(platform='instagram', root=str(root), cookies={},
+                       url='https://instagram.com/p/fixture/', mode='post')
+        with patch('gallery_dl.job.DownloadJob.run', return_value=0), \
+                patch.object(video, 'telegram_playback', return_value=preview) as convert, \
+                patch('sys.stdin', io.StringIO(json.dumps(payload))):
+            gallery_runner.main()
+        convert.assert_called_once_with(original)
+        files = json.loads((root / 'result.json').read_text())['files']
+        self.assertEqual([(f['name'], f.get('force_document', False)) for f in files],
+                         [(preview.name, False), (original.name, True)])
+
     def test_gallery_unknown_length_stream_stops_before_excess_chunk(self):
         import requests
         response=Mock(status_code=200,headers={})

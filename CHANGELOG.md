@@ -15,6 +15,10 @@
 
 ### Changed
 
+- yt-dlp 下載的 MKV 在傳送前轉成 H.265／hvc1 MP4，AAC 音訊、faststart 並驗證影音屬性，失敗保留原檔並回報。部署須提供 FFmpeg（含 libx265）及 ffprobe，轉碼新增 CPU／暫存需求，原始 MKV 需另行清理。
+
+- 記錄最高畫質 YouTube 輸出 MKV／VP9 與 Telegram 影片傳送的相容性問題，以及本機 H.264 MP4 轉換驗證結果，供後續決定自動處理策略。
+
 - README 說明 Telegram 訊息觸發的下載流程、執行相依，以及與帳號定期封存專案各自安裝和維護的方式。
 - 預設最高畫質（HDR優先可關閉），H.264只在相同畫質時優先。YouTube有FFmpeg時可直接合併原始串流，不重新壓制；取消720p偏好與低解析度完整H.264的優先地位。
 - Instagram依明確API／DASH CICP標記識別HDR及明確圖片HDR，保留請求計量與Cookie隔離。DASH缺段會失敗，不靜默降級；不猜測HEVC或10-bit必為HDR。

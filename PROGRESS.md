@@ -23,3 +23,25 @@ YouTube 改動位於 `feat/youtube-support` 分支，基於 `origin/main`。
 ## 2026-11-11：接受已知風險並合併
 
 使用者要求將 review 發現的分段 404 完整性問題保留在 log，並允許 PR #1 進入 main。已登記 YT-001 至 `docs/youtube.md`／CHANGELOG；未變更下載行為，不宣稱已修復或已完成真實 Telegram 驗收。正式 PrivateMediaBot 的功能整合與部署在獨立 private repository 維護。
+
+## 2026-11-21：Shorts MKV 播放問題
+
+- 診斷工具採 systematic-debugging、原始碼及 ffprobe。提供的檔案是 2160×3840、30 fps、SDR VP9＋AAC 的 Matroska。最高畫質選擇器允許此組合，worker 只將經探測的 MP4 當作影片送出，MKV 因此按文件傳送。
+- 已在臨時目錄製作 H.264 yuv420p＋AAC、faststart MP4，保留原尺寸。以 FFmpeg libx264 CRF 18 重新壓制畫面、copy 音訊。ffprobe 核對尺寸與編碼，完整 FFmpeg 解碼驗證通過。檔案約 20.5 MB，原檔約 9.0 MB。
+- 當時待確認處理策略，後續使用者已指定 MKV 轉 H.265 MP4（見下節）。轉碼會改變原始畫面資料並增加資源使用。
+
+### H.265 MP4 修正執行
+
+- 本機實作及驗證完成。使用者已指定 MKV 轉 H.265 MP4 後傳送。使用 systematic-debugging／TDD、Python unittest 及本機 FFmpeg／ffprobe，先加入轉換、失敗不交付與 runner 分流回歸，再以提供的短片驗證，預計測試少於 10 分鐘。
+- FFmpeg／ffprobe 和 libx265 已核對可用。Python 固定依賴於臨時環境安裝。此目錄沒有 .git，原有文件／程式已包含先前更新，採局部修改。
+
+- 修改 video.py、yt_runner.py 及 TikTok 轉換錯誤提示，新增 tests/test_video_transcode.py。整合於下載結果登記前，正常輸出只登記 H.265 MP4。轉換失敗不登記原 MKV 或暫存 MP4，原檔保留。需求、README、YouTube／架構說明及 CHANGELOG 已同步。
+- 最終驗證：臨時 Python 3.14 環境安裝 requirements.txt 固定直接依賴，完整 unittest 共 141 項通過（7.904 秒）。4 項新測試使用本機 FFmpeg 生成真實影音，涵蓋 HEVC／AAC／hvc1、原尺寸與幀率、HDR PQ／BT.2020 10-bit、失敗暫存清理，以及 YouTube runner 成功／失敗的登記與敏感錯誤遮蔽。舊 HTTP 測試需要解除 sandbox 的 loopback bind 限制，通過時沒有真實外部服務操作。
+- 提供的 8.38 秒 4K VP9＋AAC 短片經產品 helper 實測，耗時 42.97 秒，輸出 9,371,572 bytes、HEVC hvc1＋AAC、2160×3840、30 fps。ffprobe 核對及 FFmpeg 全片解碼通過。輸出在臨時目錄，來源檔案保留。
+- 邊界：未部署、未發送真實 Telegram 訊息，實際客戶端 H.265 播放待確認。HDR 動態 metadata 尚未驗證；HDR 測試只證實 PQ 色彩標記與 10-bit。原始 MKV 不屬目前交付檔案清理範圍，管理員須另行處理。此目錄無 Git metadata，沒有 commit／push。
+
+### GitHub 發布準備（2026-11-21）
+
+- 基於上游 main 的 54d1451，建立 fix/mkv-hevc-mp4 分支。只整理本次 H.265 轉換相關 10 個檔案，沿用原始 Git 歷史。
+- GitHub 上游帳號目前只提供讀取權限，將新分支發布至使用者擁有的 nokilkh/TelegramSocialDownloader fork，供上游 review。
+- 發布分支重新執行完整 unittest，141 項通過（7.994 秒），git diff --check 通過。

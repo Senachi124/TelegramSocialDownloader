@@ -69,6 +69,7 @@ def install(result,preferences=None):
 def failure_message(reason,mode):
     content='Story' if mode=='stories' else '影片／貼文'
     detail={
+        'conversion_failed':'MKV 轉換 H.265 MP4 失敗，原檔已保留；請管理員檢查 FFmpeg／ffprobe、libx265 及可用空間。',
         'forbidden':'TikTok 拒絕存取（HTTP 403）；可能是網路或平台限制，不能判定內容不存在。',
         'login_required':'TikTok 要求登入，或目前登入沒有觀看權限；請管理員更新 TikTok Cookie 後重試。',
         'challenge':'TikTok 要求驗證或阻擋自動存取，這次未能完成下載。',

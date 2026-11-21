@@ -99,7 +99,7 @@ sequenceDiagram
 | TikTok 照片／限時動態 | `gallery_runner` → gallery-dl + `tiktok` adapter。 |
 | X 貼文 | `gallery_runner` → `twitter_runner` → twscrape；媒體另由 HTTP 客戶端串流下載。 |
 
-TikTok完整影音按畫質優先，H.264同畫質優先；不合併、不轉碼。所有平台套用單一媒體2000 MB下載限制；分離影音合計但不重算合併副本。
+TikTok完整影音按畫質優先，H.264同畫質優先；MKV 完成後由 video.mkv_to_hevc 轉換為 H.265／hvc1 MP4，通過影音屬性驗證後才加入傳送清單。原 MKV 保留本機，轉換失敗會回報並停止交付該結果。所有平台套用單一媒體2000 MB下載限制；分離影音合計但不重算合併副本。
 
 進入 TikTok 媒體下載前，runner 先取得配額，再核對輸出旁的 `.format.json`（影片／格式 ID、編碼、容器、尺寸、幀率及大小；不含 URL／Cookie）。紀錄相符才使用 HTTP Range 續傳；紀錄缺失、損壞或不同時，將原 `.part` 保留到同目錄唯一的 `.part.preserved-*` 名稱，原子更新格式紀錄後從頭下載。保留檔不列入傳送或已完成媒體清理；已完成檔直接沿用，配額阻擋時不修改 partial／marker。符號連結或非一般檔案的 partial／marker 會拒絕處理。
 

@@ -21,7 +21,7 @@
 
 需要 Linux、Python 3.11+，建議安裝 `ffprobe` 以取得影片尺寸；缺少時會以原始文件傳送影片。
 
-YouTube 請將 [Deno](https://github.com/yt-dlp/yt-dlp/wiki/EJS) 加入 bot 程序的 `PATH`；既有依賴已包括 EJS。預設 HDR 優先，然後選最高畫質，H.264 僅在相同畫質時優先。建議安裝 FFmpeg 合併原始影音串流（不重新壓制）；沒有 FFmpeg 時只選完整影音。完整選擇規則見 [YouTube 下載說明](docs/youtube.md)。
+YouTube 請將 [Deno](https://github.com/yt-dlp/yt-dlp/wiki/EJS) 加入 bot 程序的 `PATH`；既有依賴已包括 EJS。優先選擇可直接傳送的原生 MP4，並在畫質範圍內套用 HDR 偏好。建議安裝 FFmpeg 合併原始影音串流（不重新壓制）；沒有 FFmpeg 時只選完整影音。完整選擇規則見 [YouTube 下載說明](docs/youtube.md)。
 
 ```sh
 python3 -m venv .venv
@@ -96,7 +96,7 @@ Local Bot API 的 `api_id`／`api_hash` 由操作者向 Telegram 取得並供給
 5. Runner 保存媒體與結果；`worker.deliver()` 傳送相簿、影片、圖片或文件。`video.py` 提供影片尺寸與時長，SQLite 保存逐檔 Telegram 收據。
 6. 平台限流會記錄冷卻時間；傳送結果不明時保留檔案以避免自動重送。維護迴圈清理符合保留期限的已完成媒體與已處理收件紀錄。
 
-TikTok 影片從完整 HTTPS 影音選擇最高畫質，H.264 僅在相同畫質時優先；無 HTTPS 時可備援 HTTP。分離影音沿用既有選擇規則，影片依下述規則準備播放版本。Instagram 依明確 API／DASH CICP 標記判斷 HDR，不把 HEVC 或 10-bit 自動視為 HDR；可關閉 HDR 優先。
+TikTok 優先使用完整 HTTPS 影片，在可用來源中優先選擇相容 MP4。Instagram 依明確 API／DASH CICP 標記判斷 HDR，不把 HEVC 或 10-bit 自動視為 HDR；可關閉 HDR 優先。
 TikTok 續傳以每個輸出檔旁的 `.format.json` 記錄格式識別與影音規格，不記錄媒體網址或憑證。只有格式紀錄相符才續傳 `.part`；舊版沒有紀錄或格式改變時，先將未完成內容保留為同目錄的 `.part.preserved-<隨機識別碼>`，再從頭下載，避免把 HEVC 前段與 H.264 後段拼接。保留檔不會傳送，也不由已完成媒體清理自動刪除；配額阻擋時不改動續傳資料。
 
 輸入是 Telegram 訊息、網址及外部設定；輸出是 Telegram 媒體訊息、本機媒體、下載結果與 SQLite 狀態。執行時主要資料包含 `state.sqlite3`、`instagram-api-rate.sqlite3`、`media/` 及 `tmp/`，全部在明確指定的資料目錄下建立。
@@ -123,7 +123,7 @@ TikTok 續傳以每個輸出檔旁的 `.format.json` 記錄格式識別與影音
 | [media_bot/core.py](media_bot/core.py) | SQLite schema、連線與寫入重試、工作與批次入列、網址分類與安全重新導向、持久媒體配額、檔案路徑檢查及已完成媒體清理。 |
 | [media_bot/inbox.py](media_bot/inbox.py) | Telegram 持久收件匣；保存 update 與 offset、依對話順序認領訊息、限制容量、處理重啟恢復及收件紀錄清理。 |
 | [media_bot/worker.py](media_bot/worker.py) | 主要協調模組；Telegram API 呼叫、輪詢、訊息與選擇按鈕、平台工作執行、下載子程序、批次協調、相簿／文件傳送、收據與錯誤狀態、工作執行緒監督及停止處理。 |
-| [media_bot/video.py](media_bot/video.py) | 使用本機 `ffprobe` 讀取 MP4 尺寸、時長、像素比例與旋轉資訊，整理成 Telegram 影片參數；另負責辨識可直接傳送的影片、轉換播放版本及驗證輸出。 |
+| [media_bot/video.py](media_bot/video.py) | 使用本機 `ffprobe` 讀取 MP4 尺寸、時長、像素比例與旋轉資訊，整理成 Telegram 影片參數；支援直接以影片傳送原檔。 |
 | [media_bot/gallery_runner.py](media_bot/gallery_runner.py) | 下載子程序入口；從 stdin 接收工作與 Cookie，設定 gallery-dl、選擇平台 runner、追蹤限流／驗證錯誤、整理媒體清單並寫入 `result.json`。 |
 
 ### Instagram 模組
@@ -141,7 +141,7 @@ TikTok 續傳以每個輸出檔旁的 `.format.json` 記錄格式識別與影音
 | 檔案 | 內容與用途 |
 | --- | --- |
 | [media_bot/tiktok.py](media_bot/tiktok.py) | TikTok 影片／照片／限時動態分流、gallery-dl 選項、Story 目標和空清單判定、重試退避及使用者錯誤訊息。 |
-| [media_bot/yt_runner.py](media_bot/yt_runner.py) | 使用 yt-dlp 下載 TikTok 和 YouTube；依快照套用畫質、HDR與同畫質H.264偏好，套用媒體大小、配額及冷卻。YouTube可選獨立Cookie與FFmpeg原樣合併。 |
+| [media_bot/yt_runner.py](media_bot/yt_runner.py) | 使用 yt-dlp 下載 TikTok 和 YouTube；依快照套用畫質與 HDR 偏好並優先選擇相容 MP4，套用媒體大小、配額及冷卻。YouTube可選獨立Cookie與FFmpeg原樣合併。 |
 | [media_bot/twitter.py](media_bot/twitter.py) | X 貼文 URL／ID 驗證、Cookie 格式解析輔助函式、原圖與最高 bitrate MP4 選擇，以及錯誤訊息分類。外部啟動設定仍使用 `config.py` 的 JSON Cookie 物件格式。 |
 | [media_bot/twitter_runner.py](media_bot/twitter_runner.py) | 以 twscrape 查詢 X 貼文，使用記憶體中的登入資料，從媒體 CDN 串流下載；以 SHA-256 收據驗證已有檔案，保存限流狀態並停用 provider dump／telemetry。 |
 
@@ -166,4 +166,4 @@ TikTok 續傳以每個輸出檔旁的 `.format.json` 記錄格式識別與影音
 
 新增模組：`preferences.py`（每位使用者設定）、`media_preferences.py`（下載選擇）、`limits.py`／`download_size.py`（傳送／下載限制）、`links.py`（可選URL服務）、`instagram_quality.py`（明確HDR判斷）、`youtube_cookies.py`（限定域Netscape parser）。
 
-各平台下載的相容 MP4 直接當作影片傳送一次。其他支援的影片會另外產生 H.265 MP4 播放版本，再把原檔以文件傳送。轉換需要含 libx265 的 FFmpeg 及 ffprobe。詳見[相容格式、交付及清理規則](docs/youtube.md#影片傳送前處理)。
+YouTube 會優先選用相容的原生 MP4，按設定選擇可用畫質。Bot 直接傳送下載的原片，分離影音只合併串流，不重新壓製。詳見[影片交付規則](docs/youtube.md#影片交付)。

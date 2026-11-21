@@ -80,8 +80,10 @@ def telegram(method,data,files=None):
             r=_transport.session.post(url,json=data,timeout=(5,35 if method=='getUpdates' else 10),allow_redirects=False)
         try:
             try:p=r.json()
-            except ValueError:raise TelegramError(r.status_code)
-            if not p.get('ok'):
+            except ValueError:raise ValueError('Unrecognized Telegram response') from None
+            if not isinstance(p,dict) or type(p.get('ok')) is not bool:
+                raise ValueError('Unrecognized Telegram response')
+            if not p['ok']:
                 raise TelegramError(p.get('error_code',500),p.get('parameters',{}).get('retry_after',0))
             return p['result']
         finally:r.close()
@@ -115,7 +117,7 @@ def authorized_update(u):
             and not actor.get('is_bot') and config.allowed(chat.get('id')))
 
 def help_text_for_runtime():
-    text='貼上 Instagram、TikTok、Twitter / X 或 YouTube HTTPS 連結；每則最多 50 個。\n/settings 設定 IG／TikTok 貼文或限時動態，以及 YouTube 畫質／HDR。IG「指定連結中的圖片」讀取每條連結的 ?img_index=3（原輪播第 3 項）；缺少或格式無效時下載全部內容，位置超出範圍或不是圖片時下載可確認的圖片，沒有圖片則保留原內容，並說明原因。IG 限時動態一律下載全部可存取內容，不需設定序號；TikTok 只選貼文全部內容或作者全部限時動態。新工作保存設定，不再逐次詢問。\n預設 HDR 優先，然後最高畫質；相同畫質優先 H.264。若偏好無法套用，會說明備援。\n單檔下載超過 2000 MB 立即取消，已有檔案保留。MB 使用十進位。\n'
+    text='貼上 Instagram、TikTok、Twitter / X 或 YouTube HTTPS 連結；每則最多 50 個。\n/settings 設定 IG／TikTok 貼文或限時動態，以及 YouTube 畫質／HDR。IG「指定連結中的圖片」讀取每條連結的 ?img_index=3（原輪播第 3 項）；缺少或格式無效時下載全部內容，位置超出範圍或不是圖片時下載可確認的圖片，沒有圖片則保留原內容，並說明原因。IG 限時動態一律下載全部可存取內容，不需設定序號；TikTok 只選貼文全部內容或作者全部限時動態。新工作保存設定，不再逐次詢問。\nYouTube／TikTok 在畫質範圍內優先選擇原生 MP4（H.264／HEVC、AAC），再按 HDR 與畫質偏好排序。找不到相容版本便使用其他原格式。影片以原檔傳送；Telegram 明確拒絕時改傳文件。\n單檔下載超過 2000 MB 立即取消，已有檔案保留。MB 使用十進位。\n'
     text+=('Local Bot API：單檔最多 500 MB 直接傳送；大於 500 MB 改提供下載連結。' if limits.local_api_enabled() else '目前使用雲端 Bot API：單檔達 49 MiB 改提供下載連結。')
     text+=('網址及已確認交付的連結檔案只保留 2 小時；直接傳送成功的檔案保留 24 小時。' if links.enabled() else '尚未設定下載網址：超過傳送上限的檔案保留本機並標記部分完成，無法提供連結。')
     return text
@@ -205,7 +207,8 @@ def _register_files(db, job_id, files):
     db.executemany(
         """INSERT INTO files(job,path,name,size,force_document,supports_streaming) VALUES (?,?,?,?,?,?)
            ON CONFLICT(job,path) DO UPDATE SET name=excluded.name, size=excluded.size,
-             force_document=excluded.force_document, supports_streaming=excluded.supports_streaming
+             force_document=max(files.force_document,excluded.force_document),
+             supports_streaming=max(files.supports_streaming,excluded.supports_streaming)
            WHERE files.state='pending'""",
         [(job_id, f['path'], f['name'], f['size'], bool(f.get('force_document')),
           bool(f.get('supports_streaming'))) for f in files],
@@ -219,8 +222,7 @@ def add_files(job,files):
 def _oversized_download(root):
     # Never total the directory: split video/audio and their merged output coexist.
     for path in root.rglob('*'):
-        # FFmpeg bounds its temporary output and the converter checks its exact
-        # size before publication. Let it fall back to the valid original.
+        # Reserved scratch from a previous release is never delivered.
         if video.is_playback_scratch(path):
             continue
         try:
@@ -246,8 +248,7 @@ def capture(job,cookies):
     runner='media_bot.gallery_runner'
     deadline=time.monotonic()+1800
     process=subprocess.Popen([sys.executable,'-m',runner],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL,start_new_session=True,text=True,
-                             env={**os.environ,'MEDIA_BOT_CAPTURE_DEADLINE':str(deadline)})
+                             stderr=subprocess.DEVNULL,start_new_session=True,text=True)
     try:
         snapshot=json.loads(job.get('preferences') or '{}')
         preferences=snapshot.get(job['platform'],{}) if isinstance(snapshot,dict) else {}
@@ -462,9 +463,9 @@ def deliver(job):
     if any(f['state']=='uncertain' for f in files):
         _mark_delivery_uncertain(job);return
     # Telegram mobile/forwarded messages rely on sender-supplied dimensions.
-    # Probe once per delivery; unknown dimensions fall back to an original file.
+    # Probe the original in its own container. Unknown video attributes use document delivery.
     dimensions={f['id']:video.attributes(c.safe_file(f['path'])) for f in files
-                if f['state']=='pending' and not f['force_document'] and Path(f['path']).suffix.lower()=='.mp4' and f['size']<=limits.telegram_file_limit()}
+                if f['state']=='pending' and not f['force_document'] and Path(f['path']).suffix.lower() in video.VIDEO_DEMUXERS and f['size']<=limits.telegram_file_limit()}
     for f in files:
         if f['supports_streaming'] and dimensions.get(f['id']):
             dimensions[f['id']]['supports_streaming'] = True
@@ -490,8 +491,10 @@ def deliver(job):
                 attachments={};media=[]
                 for n,f in enumerate(batch):
                     name='file'+str(n);path=c.safe_file(f['path']);stream=stack.enter_context(path.open('rb'))
-                    attachments[name]=(f['name'],stream,mimetypes.guess_type(f['name'])[0] or 'application/octet-stream')
+                    mime_type=mimetypes.guess_type(f['name'])[0] or 'application/octet-stream'
                     item={'type':delivery_kind(f),'media':'attach://'+name}
+                    if item['type']=='video':mime_type=video.VIDEO_MIME_TYPES[path.suffix.lower()]
+                    attachments[name]=(f['name'],stream,mime_type)
                     if item['type']=='video':item.update(dimensions[f['id']])
                     media.append(item)
                 results=telegram('sendMediaGroup',{'chat_id':job['chat'],'media':json.dumps(media)},attachments)
@@ -550,8 +553,10 @@ def deliver(job):
                     continue
                 data={'chat_id':job['chat']}
                 mime_type=mimetypes.guess_type(f['name'])[0] or 'application/octet-stream'
-                if kind=='video':data.update(dimensions[f['id']])
-                if f['force_document']:
+                if kind=='video':
+                    data.update(dimensions[f['id']])
+                    mime_type=video.VIDEO_MIME_TYPES[path.suffix.lower()]
+                if kind=='document' and (f['force_document'] or path.suffix.lower() in video.VIDEO_DEMUXERS):
                     data['disable_content_type_detection']=True
                     mime_type='application/octet-stream'
                 with path.open('rb') as stream:
@@ -562,7 +567,14 @@ def deliver(job):
                             _mark_file_states([f],'preview_failed')
                             f['state']='preview_failed'
                             continue
-                        stream.seek(0);result=telegram('sendDocument',{'chat_id':job['chat']},{'document':(f['name'],stream,'application/octet-stream')})
+                        if cancelled(job):
+                            _mark_file_states([f],'pending')
+                            c.update(job['id'],state='cancelled',cancel=1)
+                            return
+                        stream.seek(0)
+                        document_data={'chat_id':job['chat']}
+                        document_data['disable_content_type_detection']=True
+                        result=telegram('sendDocument',document_data,{'document':(f['name'],stream,'application/octet-stream')})
             if not isinstance(result,dict) or not result.get('message_id'):raise ValueError('Missing Telegram receipt')
             _save_file_receipts([(f['id'],result['message_id'])])
         except TelegramError as e:

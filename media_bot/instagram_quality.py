@@ -47,7 +47,7 @@ def prepare_post(post,preferences):
             if not eligible:
                 nearest=min(int(v.get('height') or 0) for v in videos)
                 eligible=[v for v in videos if int(v.get('height') or 0)==nearest]
-            item['video_versions']=sorted(eligible or videos,key=lambda v:rank(v,preferences))
+            item['video_versions']=sorted(eligible or videos,key=lambda v:(media_preferences.native_mp4_variant(v),rank(v,preferences)))
     return post
 
 
@@ -137,7 +137,7 @@ def install(result,preferences=None):
             media_preferences.record_notice(result,'來源沒有偏好的畫質，已改為下載最接近的可用畫質。')
         result['hdr_selected']=bool(result.get('hdr_selected') or any(f.get('dynamic_range') not in (None,'SDR') for f in chosen))
         if preferences.get('prefer_hdr',True) and not any(f.get('dynamic_range') not in (None,'SDR') for f in chosen):
-            media_preferences.record_notice(result,'來源未提供可識別的 HDR 版本，已採用可用畫質。')
+            media_preferences.record_notice(result,'所選下載版本沒有可識別的 HDR 標記。')
         return info
     def download(downloader,ydl,pathfmt,info):
         active.clear()
@@ -180,7 +180,7 @@ def install(result,preferences=None):
         config.set(('extractor','instagram'),'videos',True)
         config.set(('downloader','ytdl'),'forward-cookies',False)
         config.set(('downloader','ytdl'),'raw-options',dict(
-            format=media_preferences.selector(preferences),format_sort=media_preferences.sort(preferences),
+            format=media_preferences.selector(preferences,prefer_mp4=True),format_sort=media_preferences.sort(preferences),
             format_sort_force=True,progress_hooks=[progress],cachedir=False,cookiefile=None,usenetrc=False,
             skip_unavailable_fragments=False))
     InstagramExtractor._parse_post=parse

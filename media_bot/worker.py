@@ -478,11 +478,19 @@ def deliver(job):
                 return 'photo'
         return 'document'
 
-    def album_eligible(f):
-        return (f['state'] == 'pending' and f['size'] < limits.LARGE_UPLOAD_THRESHOLD
-                and delivery_kind(f) in ('photo', 'video'))
+    upload_limit = limits.telegram_file_limit()
+    eligible = [f for f in files if f['state'] == 'pending' and f['size'] <= upload_limit
+                and delivery_kind(f) in ('photo', 'video')]
+    # Send each album at its first member. Leave two items for the final
+    # album when taking ten would otherwise produce an ungrouped singleton.
+    albums = {}
+    start = 0
+    while len(eligible) - start >= 2:
+        count = 9 if len(eligible) - start == 11 else 10
+        group = eligible[start:start + count]
+        albums[group[0]['id']] = group
+        start += len(group)
 
-    # Telegram albums accept 2–10 photo/video entries. Preserve source order.
     def album(batch):
         if len(batch)<2 or cancelled(job):return
         _mark_file_states(batch,'uncertain')
@@ -505,32 +513,29 @@ def deliver(job):
             if error.code>=500 or error.code<400:
                 _mark_delivery_uncertain(job)
                 raise
-            if error.code==400:
-                _mark_file_states(batch,'pending');return  # Definite rejection: individual fallback.
+            if error.code in (400, 413):
+                _mark_file_states(batch, 'pending')
+                # Retry smaller groups only after definite rejection. The main
+                # loop sends singletons and starts the right half in order.
+                if len(batch) > 2:
+                    middle = (len(batch) + 1) // 2
+                    right = batch[middle:]
+                    if len(right) >= 2:
+                        albums[right[0]['id']] = right
+                    album(batch[:middle])
+                return
             _save_file_rejection(job,batch,error)
             raise error
         except Exception:
             for f in batch:f['state']='uncertain'
             _mark_delivery_uncertain(job);raise
-    candidates=[f for f in files if f['state'] not in ('sent','expired')]
-    albums={}
-    if job.get('mode')=='batch' or all(album_eligible(f) for f in candidates):
-        # Schedule eligible runs at their position in the file list, so an
-        # earlier original document is sent before any later album.
-        run=[]
-        for candidate in candidates:
-            if not album_eligible(candidate):
-                run=[]
-                continue
-            if len(run)==10:run=[]
-            run.append(candidate)
-            if len(run)==2:albums[run[0]['id']]=run
     for f in files:
         if cancelled(job):return
         if f['id'] in albums:
             try:album(albums[f['id']])
             except Exception:
                 status(job,'媒體分組傳送尚未完成，檔案保留待確認／重試');return
+            if cancelled(job):return
         if f['state'] in ('sent','expired','too_large','preview_failed'):continue
         if f['state']=='uncertain':
             c.update(job['id'],state='partial');status(job,'部分媒體傳送結果未明，請管理員確認後重試');return

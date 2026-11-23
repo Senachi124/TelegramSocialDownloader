@@ -325,6 +325,92 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual([self.file_state(f) for f in files], ['sent', 'sent'])
         self.assertEqual(c.job_by_id(job['id'])['state'], 'completed')
 
+    def record_media_calls(self, reject=None):
+        calls = []
+        def send(method, data, files=None):
+            if not files:
+                return {'message_id': 100}
+            names = [attachment[0] for attachment in files.values()]
+            calls.append((method, names))
+            if reject:
+                reject(method, names)
+            if method == 'sendMediaGroup':
+                return [{'message_id': 1000 + 10 * len(calls) + i} for i in range(len(names))]
+            return {'message_id': 1000 + 10 * len(calls)}
+        self.telegram.side_effect = send
+        return calls
+
+    def test_mixed_post_groups_large_local_video_and_photos_around_document(self):
+        job = self.job()
+        photos = [f'photo{i}.jpg' for i in range(4)]
+        for name in photos[:2]:
+            self.file(job, name)
+        self.file(job, 'original.bin')
+        for name in photos[2:]:
+            self.file(job, name)
+        self.file(job, 'video.mp4', size=220_000_000)
+        calls = self.record_media_calls()
+        with patch.dict(os.environ, {'MEDIA_BOT_API_BASE': 'http://127.0.0.1:8081'}), \
+                patch.object(w.video, 'attributes', return_value={'width': 640, 'height': 480}):
+            w.deliver(job)
+        self.assertEqual(calls, [('sendMediaGroup', photos + ['video.mp4']),
+                                 ('sendDocument', ['original.bin'])])
+        self.assertEqual(c.job_by_id(job['id'])['state'], 'completed')
+
+    def test_cloud_oversize_keeps_other_photos_in_album(self):
+        job = self.job()
+        self.file(job, 'a.jpg')
+        video = self.file(job, 'large.mp4', size=220_000_000)
+        self.file(job, 'b.jpg')
+        calls = self.record_media_calls()
+        with patch.object(w.links, 'enabled', return_value=False):
+            w.deliver(job)
+        self.assertEqual(calls, [('sendMediaGroup', ['a.jpg', 'b.jpg'])])
+        self.assertEqual(self.file_state(video), 'too_large')
+
+    def test_album_overflow_avoids_singleton(self):
+        job = self.job()
+        names = [f'{i:02}.jpg' for i in range(21)]
+        for name in names:
+            self.file(job, name)
+        calls = self.record_media_calls()
+        w.deliver(job)
+        self.assertEqual(calls, [('sendMediaGroup', names[:10]), ('sendMediaGroup', names[10:19]),
+                                 ('sendMediaGroup', names[19:])])
+
+    def test_definite_album_rejection_salvages_accepted_halves(self):
+        job = self.job()
+        names = [f'{i}.jpg' for i in range(6)]
+        files = [self.file(job, name) for name in names]
+        def reject(method, members):
+            if method == 'sendMediaGroup' and names[2] in members:
+                raise w.TelegramError(400)
+        calls = self.record_media_calls(reject)
+        w.deliver(job)
+        self.assertEqual(calls, [('sendMediaGroup', names), ('sendMediaGroup', names[:3]),
+                                 ('sendMediaGroup', names[:2]), ('sendPhoto', [names[2]]),
+                                 ('sendMediaGroup', names[3:])])
+        self.assertEqual([self.file_state(f) for f in files], ['sent'] * 6)
+        w.deliver(c.job_by_id(job['id']))
+        self.assertEqual(len(calls), 5)
+
+    def test_ambiguous_subgroup_never_replays(self):
+        job = self.job()
+        names = [f'{i}.jpg' for i in range(4)]
+        files = [self.file(job, name) for name in names]
+        def reject(method, members):
+            if len(members) == 4:
+                raise w.TelegramError(413)
+            if names[2] in members:
+                raise TimeoutError()
+        calls = self.record_media_calls(reject)
+        w.deliver(job)
+        w.deliver(c.job_by_id(job['id']))
+        self.assertEqual(calls, [('sendMediaGroup', names), ('sendMediaGroup', names[:2]),
+                                 ('sendMediaGroup', names[2:])])
+        self.assertEqual([self.file_state(f) for f in files], ['sent', 'sent', 'uncertain', 'uncertain'])
+        self.assertEqual(c.job_by_id(job['id'])['state'], 'partial')
+
     def test_ambiguous_delivery_is_never_resent(self):
         job = self.job(); file = self.file(job)
         def request(method, *args):

@@ -84,6 +84,14 @@ def telegram(method,data,files=None):
             if not isinstance(p,dict) or type(p.get('ok')) is not bool:
                 raise ValueError('Unrecognized Telegram response')
             if not p['ok']:
+                if method == 'sendMediaGroup':
+                    description = p.get('description')
+                    # An album member can fail after other members were sent.
+                    # The Bot API then returns an error without their receipts.
+                    if (not isinstance(description, str) or not description.strip()
+                            or 'failed to send message #' in description.lower()
+                            or 'group send failed' in description.lower()):
+                        raise ValueError('Unconfirmed Telegram album delivery')
                 raise TelegramError(p.get('error_code',500),p.get('parameters',{}).get('retry_after',0))
             return p['result']
         finally:r.close()
@@ -532,6 +540,14 @@ def deliver(job):
                 # Retry smaller groups only after definite rejection. The main
                 # loop sends singletons and starts the right half in order.
                 if len(batch) > 2:
+                    large = [f for f in batch if f['size'] >= limits.LARGE_UPLOAD_THRESHOLD]
+                    if len(large) == 1:
+                        smaller = [f for f in batch if f['id'] != large[0]['id']]
+                        if smaller[0]['id'] == batch[0]['id']:
+                            album(smaller)
+                        else:
+                            albums[smaller[0]['id']] = smaller
+                        return
                     middle = (len(batch) + 1) // 2
                     right = batch[middle:]
                     if len(right) >= 2:

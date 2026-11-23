@@ -101,6 +101,31 @@ class Features(unittest.TestCase):
             return {'message_id':1}
         with patch.object(w,'telegram',side_effect=send) as api:w.deliver(job);w.deliver(job)
         self.assertEqual(sum(call.args[0]=='sendDocument' for call in api.call_args_list),1)
+    def test_album_member_failure_does_not_split_or_repeat(self):
+        for n, description in enumerate(('Bad Request: Failed to send message #2',
+                                         'Bad Request: Group send failed', None)):
+            with self.subTest(description=description):
+                job = self.job(f'ambiguous-{n}')
+                directory = self.root / 'media' / job['id']
+                directory.mkdir()
+                for name in ('1.jpg', '2.jpg', '3.jpg'):
+                    path = directory / name
+                    path.write_bytes(b'fixture')
+                    w.add_files(job, [dict(path=str(path), name=name, size=path.stat().st_size)])
+                response = Mock()
+                response.json.return_value = {'ok': False, 'error_code': 400, 'description': description}
+                session = Mock()
+                session.post.return_value = response
+                with patch.object(config, 'token', return_value='123:synthetic'), \
+                        patch.object(w._transport, 'session', session, create=True), patch.object(w, 'status'):
+                    w.deliver(job)
+                    w.deliver(c.job_by_id(job['id']))
+                self.assertEqual(session.post.call_count, 1)
+                self.assertEqual(c.job_by_id(job['id'])['state'], 'partial')
+                with c.db() as db:
+                    states = [r[0] for r in db.execute('SELECT state FROM files WHERE job=?', (job['id'],))]
+                self.assertEqual(states, ['uncertain'] * 3)
+
     def test_local_path_upload_validation(self):
         job=self.job();file=self.file(job)
         response=Mock();response.json.return_value={'ok':True,'result':{'message_id':1}}

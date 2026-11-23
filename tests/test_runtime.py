@@ -414,6 +414,28 @@ class RuntimeTests(unittest.TestCase):
         w.deliver(c.job_by_id(job['id']))
         self.assertEqual(len(calls), 5)
 
+    def test_rejected_mixed_album_keeps_four_photos_together(self):
+        photos = [f'{i}.jpg' for i in range(4)]
+        for position in (0, 2, 4):
+            with self.subTest(position=position):
+                job = self.job(key=f'rejected-large-{position}')
+                names = photos.copy()
+                names.insert(position, 'video.mp4')
+                for name in names:
+                    self.file(job, name, size=220_000_000 if name == 'video.mp4' else 12)
+                def reject(method, members):
+                    if method == 'sendMediaGroup' and 'video.mp4' in members:
+                        raise w.TelegramError(400)
+                calls = self.record_media_calls(reject)
+                with patch.dict(os.environ, {'MEDIA_BOT_API_BASE': 'http://127.0.0.1:8081'}), \
+                        patch.object(w.video, 'attributes', return_value={'width': 640, 'height': 480}):
+                    w.deliver(job)
+                fallback = [('sendMediaGroup', photos), ('sendVideo', ['video.mp4'])]
+                if position == 0:
+                    fallback.reverse()
+                self.assertEqual(calls, [('sendMediaGroup', names)] + fallback)
+                self.assertEqual(c.job_by_id(job['id'])['state'], 'completed')
+
     def test_ambiguous_subgroup_never_replays(self):
         job = self.job()
         names = [f'{i}.jpg' for i in range(4)]

@@ -254,7 +254,7 @@ YouTube 格式優先順序、stream copy 與驗證方式見 [YouTube 下載說�
 | `name` | 傳送時使用的檔名。 |
 | `size` | 登記時的 byte 大小。 |
 | `state` | `pending`、`uncertain`、`sent`、`too_large`、`preview_failed` 或 `expired`。 |
-| `force_document` | 需以獨立文件交付的原檔。舊紀錄預設為 0。 |
+| `force_document` | 需以文件交付的原檔，可與其他文件合併成純文件相簿。舊紀錄預設為 0。 |
 | `supports_streaming` | 已驗證並啟用 faststart 的播放版本。舊紀錄預設為 0。 |
 | `telegram_id` | 成功傳送的 Telegram **message_id**，以文字保存；不是 Telegram file_id。 |
 

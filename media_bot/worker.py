@@ -479,17 +479,28 @@ def deliver(job):
         return 'document'
 
     upload_limit = limits.telegram_file_limit()
-    eligible = [f for f in files if f['state'] == 'pending' and f['size'] <= upload_limit
-                and delivery_kind(f) in ('photo', 'video')]
-    # Send each album at its first member. Leave two items for the final
-    # album when taking ten would otherwise produce an ungrouped singleton.
+    visual, documents = [], []
+    for f in files:
+        if f['state'] != 'pending' or f['size'] > upload_limit:
+            continue
+        kind = delivery_kind(f)
+        if f['supports_streaming'] and kind != 'video':
+            continue
+        if kind == 'document':
+            documents.append(f)
+        else:
+            visual.append(f)
+
+    # Telegram accepts photos/videos together and documents in their own
+    # albums. Emit each album at its first member and avoid a lone final item.
     albums = {}
-    start = 0
-    while len(eligible) - start >= 2:
-        count = 9 if len(eligible) - start == 11 else 10
-        group = eligible[start:start + count]
-        albums[group[0]['id']] = group
-        start += len(group)
+    for eligible in (visual, documents):
+        start = 0
+        while len(eligible) - start >= 2:
+            count = 9 if len(eligible) - start == 11 else 10
+            group = eligible[start:start + count]
+            albums[group[0]['id']] = group
+            start += len(group)
 
     def album(batch):
         if len(batch)<2 or cancelled(job):return
@@ -502,6 +513,9 @@ def deliver(job):
                     mime_type=mimetypes.guess_type(f['name'])[0] or 'application/octet-stream'
                     item={'type':delivery_kind(f),'media':'attach://'+name}
                     if item['type']=='video':mime_type=video.VIDEO_MIME_TYPES[path.suffix.lower()]
+                    if item['type'] == 'document':
+                        item['disable_content_type_detection'] = True
+                        mime_type = 'application/octet-stream'
                     attachments[name]=(f['name'],stream,mime_type)
                     if item['type']=='video':item.update(dimensions[f['id']])
                     media.append(item)

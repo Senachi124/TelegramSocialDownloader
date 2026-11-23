@@ -357,6 +357,26 @@ class RuntimeTests(unittest.TestCase):
                                  ('sendDocument', ['original.bin'])])
         self.assertEqual(c.job_by_id(job['id'])['state'], 'completed')
 
+    def test_documents_and_visual_media_form_separate_albums(self):
+        import json
+        job = self.job()
+        self.file(job, 'original.mp4', force_document=True)
+        self.file(job, 'a.jpg')
+        failed_preview = self.file(job, 'preview.mp4', supports_streaming=True)
+        self.file(job, 'b.jpg')
+        self.file(job, 'notes.bin')
+        calls = self.record_media_calls()
+        with patch.object(w.video, 'attributes', return_value=None):
+            w.deliver(job)
+        self.assertEqual(calls, [('sendMediaGroup', ['original.mp4', 'notes.bin']),
+                                 ('sendMediaGroup', ['a.jpg', 'b.jpg'])])
+        document_request = next(call for call in self.telegram.call_args_list
+                                if call.args[0] == 'sendMediaGroup')
+        docs = json.loads(document_request.args[1]['media'])
+        self.assertEqual([doc['type'] for doc in docs], ['document', 'document'])
+        self.assertTrue(all(doc['disable_content_type_detection'] for doc in docs))
+        self.assertEqual(self.file_state(failed_preview), 'preview_failed')
+
     def test_cloud_oversize_keeps_other_photos_in_album(self):
         job = self.job()
         self.file(job, 'a.jpg')

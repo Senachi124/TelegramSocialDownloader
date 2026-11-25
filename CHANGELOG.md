@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.2 — 2026-11-25
+
+- Return the production deployment receipt through the public status endpoint so the Actions job can confirm activation.
+
 ## 1.0.1 — 2026-11-25
 
 - Install the standalone Linux service and deploy tested releases from the production workflow.

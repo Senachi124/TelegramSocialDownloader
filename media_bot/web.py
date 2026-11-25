@@ -4,6 +4,7 @@ import contextlib
 import hmac
 import http.server
 import ipaddress
+import json
 import os
 import re
 import secrets
@@ -18,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 from . import admin_auth, local_socket
 from . import access, accounts, core as c, links, pool_checks, web_layout as layout
 
+DEPLOYMENT_RECEIPT = Path('/var/lib/telegram-social-deploy/status.json')
 TTL = 3 * 86400
 ACCOUNT_RESUME_MAX_AGE = 30 * 60
 
@@ -119,7 +121,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.respond(404,'Not found')
             route = path.path[len(c.BASE):]
             if route=='deployment-status':
-                receipt = Path('/var/lib/telegram-social-deploy/status.json')
+                receipt = DEPLOYMENT_RECEIPT
                 if not receipt.is_file():
                     return self.respond(404,'No deployment receipt')
                 state = json.loads(receipt.read_text())

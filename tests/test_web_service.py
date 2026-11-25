@@ -105,6 +105,16 @@ class WebServiceTests(unittest.TestCase):
         self.assertEqual(self.request('logout',cookie=cookie,form={'csrf':csrf})[0],303)
         self.assertEqual(self.request('users',cookie=cookie)[0],303)
 
+    def test_public_deployment_receipt(self):
+        receipt = self.root/'status.json'
+        with patch.object(self.web, 'DEPLOYMENT_RECEIPT', receipt):
+            self.assertEqual(self.request('deployment-status')[0], 404)
+            expected = {'deployment': 111, 'sha': 'b'*40, 'state': 'success'}
+            receipt.write_text(json.dumps(dict(expected, extra='private')))
+            status, body, _ = self.request('deployment-status?deployment=111')
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), expected)
+
     def test_expired_session_and_removed_routes(self):
         cookie,csrf = self.login()
         for path in ('history','admin-media/1','llm-traces','unknown'):

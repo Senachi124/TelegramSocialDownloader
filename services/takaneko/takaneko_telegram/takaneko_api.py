@@ -47,6 +47,20 @@ class FanclubError(RuntimeError):
         self.status = status
 
 
+class FanclubHTTPError(FanclubError):
+    """An upstream HTTP failure carrying a content-free diagnostic."""
+
+    source = 'Fanclub'
+
+    def __init__(self, status):
+        self.status_message = f'{self.source} HTTP {status:d}'
+        super().__init__(self.status_message, status=status)
+
+
+class MediaHTTPError(FanclubHTTPError):
+    source = 'Media'
+
+
 def _epoch(value):
     if value is None or value == '':
         return 0
@@ -216,7 +230,7 @@ class Client:
             conn.request('POST' if body is not None else 'GET', path, body=payload, headers=headers)
             response = conn.getresponse()
             if response.status != 200:
-                raise FanclubError('Fanclub HTTP ' + str(response.status), status=response.status)
+                raise FanclubHTTPError(response.status)
             raw = response.read(MAX_JSON + 1)
             if len(raw) > MAX_JSON:
                 raise FanclubError('Fanclub response exceeds limit')
@@ -487,7 +501,7 @@ class Client:
                     url = urljoin(url, location)
                     continue
                 if response.status != 200:
-                    raise FanclubError('Media HTTP ' + str(response.status))
+                    raise MediaHTTPError(response.status)
                 length = response.getheader('Content-Length')
                 download_size.declared({'Content-Length':length})
                 if length is not None and (not length.isdigit() or int(length) > max_bytes):

@@ -13,9 +13,17 @@ from .. import core as c, limits
 
 
 class TelegramError(Exception):
-    def __init__(self, code, retry=0):
+    def __init__(self, code, retry=0, *, http_status=None, diagnostic=None):
         self.code = code
         self.retry = retry
+        self.http_status = http_status
+        self.diagnostic = diagnostic
+
+
+class InvalidTelegramResponse(ValueError):
+    def __init__(self, status):
+        super().__init__('Unrecognized Telegram response')
+        self.http_status = status
 
 
 _transport = threading.local()
@@ -81,7 +89,7 @@ def telegram(method, data, files=None):
         _transport.token_until = now + 5
     token = _transport.token
     if not token:
-        raise TelegramError(401)
+        raise TelegramError(401, diagnostic='send_token')
     if not hasattr(_transport, 'session'):
         _transport.session = requests.Session()
     base = limits.telegram_api_base()
@@ -114,13 +122,22 @@ def telegram(method, data, files=None):
                 url, json=data, timeout=(5, 35 if method == 'getUpdates' else 10), allow_redirects=False
             )
         try:
+            status = r.status_code
             try:
                 p = r.json()
             except ValueError:
-                raise ValueError('Unrecognized Telegram response') from None
+                raise InvalidTelegramResponse(status) from None
             if not isinstance(p, dict) or type(p.get('ok')) is not bool:
-                raise ValueError('Unrecognized Telegram response')
+                raise InvalidTelegramResponse(status)
             if not p['ok']:
+                code = p.get('error_code')
+                parameters = p.get('parameters', {})
+                if (type(code) is not int or not isinstance(parameters, dict)
+                        or (type(status) is int and status >= 500 and code < 500)):
+                    raise InvalidTelegramResponse(status)
+                delay = parameters.get('retry_after', 0)
+                if type(delay) is not int or delay < 0:
+                    raise InvalidTelegramResponse(status)
                 # Local Bot API can return a single error after collecting both
                 # successful and failed per-message callbacks for one album.
                 description = p.get('description')
@@ -133,7 +150,9 @@ def telegram(method, data, files=None):
                     raise ValueError('Album delivery could be partial')
                 if p.get('error_code') == 401:
                     _transport.token_until = 0
-                raise TelegramError(p.get('error_code', 500), p.get('parameters', {}).get('retry_after', 0))
+                raise TelegramError(code, delay, http_status=status)
+            if 'result' not in p or p['result'] is None or (type(status) is int and status >= 400):
+                raise InvalidTelegramResponse(status)
             return p['result']
         finally:
             r.close()

@@ -25,7 +25,7 @@ h1, h2, h3 { line-height: 1.25; text-wrap: balance }
 h1 { font-size: clamp(1.75rem, 4vw, 2.35rem); letter-spacing: -.035em; margin-bottom: 1.25rem }
 h2 { font-size: 1.28rem; letter-spacing: -.012em }
 h3 { font-size: 1.04rem; margin: 1.4rem 0 .45rem }
-section, details.pool, .entry-card { background: white; border: 1px solid var(--line); border-radius: .7rem; padding: clamp(1rem, 2.4vw, 1.55rem); margin: .9rem 0 }
+section, details.pool, .entry-card, .error-log { background: white; border: 1px solid var(--line); border-radius: .7rem; padding: clamp(1rem, 2.4vw, 1.55rem); margin: .9rem 0 }
 .section-head, .record, .feature-row { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: .55rem 1rem }
 .section-head h2, .record p, .feature-row p, .feature-row h3 { margin: 0 }
 .record, .feature-row { padding: .85rem 0 }
@@ -61,8 +61,6 @@ main:has(.notice) :is(:target, button, input, summary, a) { scroll-margin-top: 4
 [role=alert] { background: #ffede8; color: #812a24 }
 .callout { background: #fff2d8; color: #593f0c }
 details { padding: .55rem 0 }
-.review-delivery + .review-delivery { border-top: 1px solid var(--line) }
-.review-delivery label { display: flex; align-items: center; gap: .65rem; min-height: 2.75rem; margin: .2rem 0 }
 summary { cursor: pointer; font-weight: 650; color: var(--teal); padding: .6rem .2rem; min-height: 2.75rem }
 summary .muted { font-size: .93rem; font-weight: 450; margin-left: .5rem }
 details[open] > summary { margin-bottom: .35rem }
@@ -71,6 +69,11 @@ details.pool { padding-block: .65rem }
 details.pool[open] { padding-bottom: 1.35rem }
 ul { padding-left: 1.4rem }
 li { margin: .55rem 0 }
+.error-log { list-style: none }
+.error-log li { margin: 0; padding: .8rem 0 }
+.error-log li + li { border-top: 1px solid var(--line) }
+.error-meta { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .15rem 1rem; margin-bottom: .25rem }
+.error-meta span { color: var(--muted); font-size: .9rem }
 fieldset { min-width: 0; border: 1px solid var(--line); margin: 1rem 0; padding: .8rem }
 .entry { max-width: 29rem; padding: 1.5rem; margin: clamp(2rem, 10vh, 7rem) auto }
 .entry-card { padding: clamp(1rem, 3vw, 2rem) }

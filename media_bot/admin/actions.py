@@ -42,7 +42,6 @@ ACTIONS = {
     'api-key': ('keys', 'translation-keys', 'Translation keys updated.'),
     'local-api': ('keys', 'local-api', 'Local API credentials saved.'),
     'subscriptions': ('subscriptions', '', 'Subscription settings saved.'),
-    'delivery-review': ('subscriptions', 'delivery-review', 'Delivery decision recorded.'),
 }
 
 
@@ -122,9 +121,6 @@ def manage(route, form):
     elif route=='subscriptions':
         from .. import push
         push.web_post(form)
-    elif route=='delivery-review':
-        from . import delivery_review
-        delivery_review.submit(form)
     else:
         return None
     return destination(route, form)

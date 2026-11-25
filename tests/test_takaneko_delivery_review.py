@@ -35,21 +35,28 @@ class DeliveryReviewTests(unittest.TestCase):
                 db.execute("INSERT INTO tk_parts VALUES (?,?,?,'pending',NULL)", (row['id'], position, payload))
         return row
 
-    @staticmethod
-    def control(op, **kwargs):
-        return transport.control(11, dict(op=op, **kwargs), None)
-
     def items(self, **kwargs):
-        return self.control('review_deliveries', **kwargs)['items']
+        return feed.review_deliveries(**kwargs)['items']
 
     def decide(self, item, decision='sent'):
-        return self.control('resolve_delivery', **{k: item[k] for k in ('delivery_id', 'position', 'attempt')},
+        return feed.resolve_delivery(**{k: item[k] for k in ('delivery_id', 'position', 'attempt')},
                             decision=decision)
 
     def states(self, delivery):
         with state.db() as db:
             return [tuple(p) for p in db.execute('SELECT state,telegram_id FROM tk_parts WHERE delivery_id=? '
                                                  'ORDER BY position', (delivery['id'],))]
+
+    def test_control_socket_offers_no_delivery_review_operations(self):
+        delivery = self.delivery()
+        feed.deliver(delivery, Mock(side_effect=TimeoutError))
+        item, = self.items()
+        listing = transport.control(11, {'op': 'list'}, None)
+        self.assertNotIn('review_deliveries', listing['capabilities'])
+        for op in ('review_deliveries', 'resolve_delivery'):
+            request = {'op': op, **item, 'decision': 'retry'}
+            self.assertEqual(transport.control(11, request, None), {'ok': False})
+        self.assertEqual(self.items(), [item])
 
     def test_confirm_one_part_preserves_receipt_and_sends_only_remaining_part(self):
         delivery = self.delivery(kinds=('text', 'text', 'text'))
@@ -71,7 +78,7 @@ class DeliveryReviewTests(unittest.TestCase):
         with state.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM tk_review_attempts').fetchone()[0], 0)
 
-    def test_same_part_retry_gets_new_attempt_and_stale_browser_submission_fails(self):
+    def test_same_part_retry_gets_new_attempt_and_stale_decision_fails(self):
         delivery = self.delivery()
         failed = Mock(side_effect=transport.TelegramError(502))
         feed.deliver(delivery, failed)
@@ -101,7 +108,7 @@ class DeliveryReviewTests(unittest.TestCase):
             # A second process can initialize before it learns it isn't the sender.
             state.initialize()
             self.assertEqual(self.items(), [])
-            self.assertEqual(self.control('resolve_delivery', delivery_id=delivery['id'], position=0,
+            self.assertEqual(feed.resolve_delivery(delivery_id=delivery['id'], position=0,
                                           attempt=attempt, decision='retry'), {'ok': False, 'error': 'stale'})
             with self.assertRaises(ValueError):
                 feed.current_review(delivery['id'])
@@ -203,7 +210,7 @@ class DeliveryReviewTests(unittest.TestCase):
             stop.set()
             feed.run(stop)
             self.assertEqual(self.items(), [])
-            self.assertEqual(self.control('resolve_delivery', delivery_id=delivery['id'], position=0,
+            self.assertEqual(feed.resolve_delivery(delivery_id=delivery['id'], position=0,
                                           attempt=attempt, decision='retry')['error'], 'stale')
             received = threading.Event()
             finish = threading.Event()
@@ -290,12 +297,12 @@ class DeliveryReviewTests(unittest.TestCase):
             db.execute("UPDATE tk_parts SET state='uncertain'")
         state.initialize()
         with patch.object(transport, 'send_finished', wraps=transport.send_finished) as guard:
-            first = self.control('review_deliveries')
+            first = feed.review_deliveries()
             self.assertEqual(guard.call_count, feed.REVIEW_PAGE_SIZE + 1)
         self.assertEqual(len(first['items']), 20)
         self.assertEqual(first['next_after'], first['items'][-1]['delivery_id'])
         with patch.object(transport, 'send_finished', wraps=transport.send_finished) as guard:
-            last = self.control('review_deliveries', after=first['next_after'])
+            last = feed.review_deliveries(after=first['next_after'])
             self.assertEqual(guard.call_count, 3)
         self.assertEqual(len(last['items']), 3)
         self.assertIsNone(last['next_after'])
@@ -304,13 +311,13 @@ class DeliveryReviewTests(unittest.TestCase):
         self.assertTrue(all(item['kind'] == 'attachment' for item in first['items']))
         self.assertNotIn('private', json.dumps(first))
         state.initialize()
-        self.assertEqual(first, self.control('review_deliveries'))
+        self.assertEqual(first, feed.review_deliveries())
         for invalid in (-1, None, '2', False, 2**63):
-            self.assertEqual(self.control('review_deliveries', after=invalid), {'ok': False, 'error': 'invalid'})
+            self.assertEqual(feed.review_deliveries(after=invalid), {'ok': False, 'error': 'invalid'})
         item = first['items'][0]
         for fields in ({'delivery_id': True}, {'position': -1}, {'attempt': ''}, {'decision': None}):
             args = {k: item[k] for k in ('delivery_id', 'position', 'attempt')}
-            self.assertEqual(self.control('resolve_delivery', **{**args, 'decision': 'sent', **fields}),
+            self.assertEqual(feed.resolve_delivery(**{**args, 'decision': 'sent', **fields}),
                              {'ok': False, 'error': 'invalid'})
 
 

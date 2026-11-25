@@ -1,12 +1,16 @@
 """Bot delivery for subscribed users. Each producer maintains its own queue and subscriptions."""
 import html
 import json
+import logging
 import mimetypes
 import os
 from pathlib import Path
 import re
+import time
 
-from . import access, core, limits, push_socket
+import requests
+
+from . import access, core, error_log, limits, push_socket
 
 
 def providers():
@@ -33,17 +37,11 @@ class FanclubSessionRequired(ValueError):
     pass
 
 
-class DeliveryReviewChanged(ValueError):
-    pass
-
-
 def control(entry, operation, **fields):
     reply = push_socket.exchange(entry['control'], entry['uid'], {'op': operation, **fields})
     if reply.get('ok') is not True:
         if operation == 'set_enabled' and reply.get('error') == 'session_required':
             raise FanclubSessionRequired('Save a Fanclub session before enabling notifications.')
-        if operation == 'resolve_delivery' and reply.get('error') == 'stale':
-            raise DeliveryReviewChanged('Delivery is no longer eligible for this decision.')
         raise ValueError('Subscription service unavailable')
     return reply
 
@@ -55,14 +53,15 @@ HEALTH = {
     'rate_limit': 'The upstream service is limiting requests.',
     'access': 'The source denied access.',
     'network': 'The upstream service could not be reached.',
-    'uncertain': 'A delivery is awaiting manual confirmation.',
+    'uncertain': 'A Telegram send has no saved delivery receipt.',
     'format': 'The producer could not process the content.',
     'paused': 'Processing is paused and requires attention.',
 }
 
 
 def report_health(slug, code):
-    if code not in HEALTH:
+    if not isinstance(code, str) or (code not in HEALTH and not
+            (slug == 'takaneko' and (code in error_log.FANCLUB or error_log.provider_http_status(code)))):
         return {'ok': False, 'code': 400}
     key = 'push_health.' + slug
     value = json.dumps(code)
@@ -72,14 +71,19 @@ def report_health(slug, code):
         if previous and previous[0] == value:
             return {'ok': True}
         db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, value))
+        if code != 'ok':
+            try:
+                error_log.record_health(db, slug, code, time.time())
+            except Exception as error:
+                logging.getLogger(__name__).warning('Provider diagnostic unavailable (%s)', type(error).__name__)
         enabled = db.execute("SELECT value FROM settings WHERE key='failure_alerts'").fetchone()
-        if code != 'ok' and (not enabled or enabled[0] == 'true'):
-            db.execute('INSERT INTO admin_alert_queue(reason,platform) VALUES (?,?)', (code, 'push'))
+        if slug != 'takaneko' and code != 'ok' and (not enabled or enabled[0] == 'true'):
+            db.execute('INSERT INTO admin_alert_queue(reason,platform) VALUES (?,?)', (code, 'push_provider'))
     return {'ok': True}
 
 
 def dispatch(entry, request, fd, send=None, slug=None):
-    from .processing.telegram_api import telegram, TelegramError
+    from .processing.telegram_api import telegram, TelegramError, InvalidTelegramResponse
     if request.get('op') == 'health' and fd is None and slug:
         return report_health(slug, request.get('status'))
     if request.get('op') == 'limits' and fd is None:
@@ -129,17 +133,39 @@ def dispatch(entry, request, fd, send=None, slug=None):
                 reply = send('send' + kind.title(), data, {kind: file})
         else:
             return {'ok': False, 'code': 400}
-        if type(reply.get('message_id')) is not int:
+        if not isinstance(reply, dict) or type(reply.get('message_id')) is not int or reply['message_id'] <= 0:
+            error_log.record_send(slug, 'send_receipt')
             return {'ok': False, 'error': 'uncertain'}
         return {'ok': True, 'message_id': reply['message_id']}
     except TelegramError as error:
+        if type(error.http_status) is int and 400 <= error.http_status <= 599:
+            error_log.record_send(slug, 'send_http', error.http_status)
+        elif error.diagnostic:
+            error_log.record_send(slug, error.diagnostic)
+        else:
+            error_log.record_send(slug, 'send_api', error.code)
         if 400 <= error.code < 500:
             return {'ok': False, 'code': error.code, 'retry_after': error.retry}
         return {'ok': False, 'error': 'uncertain'}
+    except InvalidTelegramResponse as error:
+        if type(error.http_status) is int and 400 <= error.http_status <= 599:
+            error_log.record_send(slug, 'send_http', error.http_status)
+        else:
+            error_log.record_send(slug, 'send_response')
+        raise
+    except (requests.Timeout, TimeoutError):
+        error_log.record_send(slug, 'send_timeout')
+        raise
+    except (requests.ConnectionError, ConnectionError):
+        error_log.record_send(slug, 'send_connection')
+        raise
+    except Exception:
+        error_log.record_send(slug, 'send_failure')
+        raise
 
 
-def web_panel(hidden, review_after=0):
-    from .admin import delivery_review, views as layout
+def web_panel(hidden):
+    from .admin import views as layout
 
     configured = providers()
     if not configured:
@@ -161,23 +187,10 @@ def web_panel(hidden, review_after=0):
                 raise ValueError('Invalid subscriber list')
             subscribed = set(subscribers)
         except (OSError, ValueError, KeyError):
-            section += '<p>Subscriber list unavailable. Check the provider service and reload this page.</p>'
-            if slug == 'takaneko':
-                section += delivery_review.unavailable()
-            sections.append(section + '</section>')
+            sections.append(section + '<p>Subscriber list unavailable.</p></section>')
             continue
 
-        health = core.get_setting('push_health.' + slug, 'ok')
         caps = listing.get('capabilities', [])
-        can_review = slug == 'takaneko' and 'review_deliveries' in caps
-        if slug == 'takaneko' and health == 'uncertain':
-            if not can_review:
-                section += ('<p class="state warn">The last provider report flagged an unconfirmed send. '
-                            'Update the provider to view the live review list.</p>')
-        elif health in HEALTH and health != 'ok':
-            section += f'<p class="state warn">{html.escape(HEALTH[health])}</p>'
-        if can_review:
-            section += delivery_review.panel(entry, hidden, users, subscribed, review_after)
         provider = hidden + layout.hidden_field('provider', slug)
         if slug == 'takaneko' and 'set_session' in caps:
             section += '<h3>Fanclub session</h3>'

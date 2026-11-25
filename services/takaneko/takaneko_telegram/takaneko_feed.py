@@ -598,9 +598,11 @@ def process_once():
                 db.execute("UPDATE tk_deliveries SET state='cancelled',error=? WHERE post_id=? AND state IN ('pending','ready','paused')",(message,post['id']))
             c.setting('takaneko_error',message)
         except Exception as error:
-            from .takaneko_api import FanclubError
+            from .takaneko_api import FanclubError, FanclubHTTPError
             from .takaneko_content import TranslationError
-            if isinstance(error,FanclubError) and error.status==403:
+            if isinstance(error, FanclubHTTPError):
+                message = error.status_message
+            elif isinstance(error,FanclubError) and error.status==403:
                 message='來源拒絕存取（403）；已跳過，保留待重試'
             elif isinstance(error,FanclubError) and error.status==401:
                 message='來源登入失效（401）；已跳過，請更新登入憑證'
@@ -627,6 +629,9 @@ def process_once():
 def _report_error(key,message,error):
     # Diagnostics must remain available when the database itself is unavailable.
     # Never log exception text: upstream exceptions may contain private data.
+    from .takaneko_api import FanclubHTTPError
+    if isinstance(error, FanclubHTTPError):
+        message = error.status_message
     _LOG.warning('Takaneko %s failed (%s); will retry',key,type(error).__name__)
     try:c.setting(key,message)
     except Exception:_LOG.warning('Takaneko error status unavailable; retry loop remains active')

@@ -133,7 +133,7 @@ def feature_control(enabled=None):
 def report_health(*, credentials_unavailable=False):
     from . import state as c
     if credentials_unavailable:
-        return _call({'op': 'health', 'status': 'account'})
+        return _call({'op': 'health', 'status': 'broker_unavailable'})
     # Send only stable reasons for open work, independent of article contents.
     with c.db() as db:
         db.create_function('send_finished', 1, send_finished)
@@ -145,11 +145,21 @@ def report_health(*, credentials_unavailable=False):
                                   (SELECT 1 FROM tk_review_attempts a WHERE a.delivery_id=d.id AND
                                    CASE WHEN a.active=1 THEN 1 ELSE NOT send_finished(a.attempt) END)
                                   LIMIT 1""").fetchone()
+    poll_error = c.get_setting('takaneko_poll_error')
     if failed:
-        reason = ('account' if '401' in failed[0] else 'access' if '403' in failed[0]
-                  else 'network' if '讀取失敗' in failed[0] else 'format')
-    elif c.get_setting('takaneko_poll_error'):
-        reason = 'network'
+        status = re.fullmatch(r'(Fanclub|Media) HTTP ([45][0-9]{2})', failed[0])
+        if status:
+            reason = status[1].lower() + '_read_http_' + status[2]
+        else:
+            reason = {
+                '來源登入失效（401）；已跳過，請更新登入憑證': 'fanclub_unauthorized',
+                '來源拒絕存取（403）；已跳過，保留待重試': 'fanclub_forbidden',
+                '來源讀取失敗；已跳過，保留待重試': 'fanclub_read',
+                'OpenAI 翻譯失敗；已跳過，保留待重試': 'translation',
+            }.get(failed[0], 'fanclub_format')
+    elif poll_error:
+        status = re.fullmatch(r'Fanclub HTTP ([45][0-9]{2})', poll_error) if isinstance(poll_error, str) else None
+        reason = 'fanclub_poll_http_' + status[1] if status else 'fanclub_poll'
     elif paused:
         reason = 'paused'
     elif uncertain:
@@ -181,12 +191,7 @@ def control(uid, request, fd):
     if op == 'list':
         with c.db() as db:
             users = [row[0] for row in db.execute('SELECT user_id FROM tk_subscriptions WHERE enabled=1')]
-        return {'ok': True, 'users': users, 'capabilities': ['set_session', 'set_enabled', 'review_deliveries']}
-    if op == 'review_deliveries':
-        return feed.review_deliveries(request.get('after', 0))
-    if op == 'resolve_delivery':
-        return feed.resolve_delivery(request.get('delivery_id'), request.get('position'),
-                                     request.get('attempt'), request.get('decision'))
+        return {'ok': True, 'users': users, 'capabilities': ['set_session', 'set_enabled']}
     user_id = request.get('user_id')
     if type(user_id) is not int or not 0 < user_id < 2**63:
         return {'ok': False}

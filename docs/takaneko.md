@@ -59,15 +59,11 @@ sudo env TAKANEKO_SECRET_SOCKET=/run/telegram-social-takaneko-broker/broker.sock
 
 ## Services and operations
 
-### Review an uncertain delivery
+### Read delivery errors
 
-Open **Takaneko subscriptions → Delivery review**. A delivery can have multiple parts, such as a text message followed by photos. If Telegram times out or the worker stops before it saves a receipt, the recipient may already have the affected part. The worker holds that delivery and continues eligible work for other deliveries.
+Open **Error log** in the admin console to see the source and error message. A Fanclub login or polling error occurs while the provider is reading Fanclub. A missing Telegram receipt occurs later, during delivery to a subscriber. Telegram may already have accepted that send. The worker holds the affected delivery and continues with other eligible subscribers.
 
-1. Find the delivery ID and recipient. Use the queue creation time, part number and type to identify the part in the recipient’s Telegram conversation. Creation time can precede delivery.
-2. Expand the delivery. If the recipient confirms they received that part, choose **Received**. If they confirm it is missing, choose **Missing**. Tick the confirmation box and select **Save decision**. If the recipient is unsure, leave the item on hold.
-3. The worker can then continue any remaining parts. Earlier confirmed parts keep their receipts. A retry can send a duplicate if the part had already arrived.
-
-To exercise both outcomes without sending Telegram messages, run the offline test suite using the command in the README. Its synthetic deliveries simulate lost acknowledgements, manual decisions and subsequent worker runs.
+Use **Takaneko subscriptions** to update the Fanclub session or manage recipients.
 
 ### Service commands
 

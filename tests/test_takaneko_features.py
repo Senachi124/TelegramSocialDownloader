@@ -48,6 +48,36 @@ class FanclubFeatureTests(unittest.TestCase):
                 self.control('set_enabled', enabled=True)
         self.assertFalse(feed.is_enabled())
 
+    def test_poll_and_content_errors_keep_the_fanclub_http_status(self):
+        from takaneko_telegram import takaneko_api as api
+
+        feed.set_enabled(True)
+        response = Mock(status=429)
+        response.read.side_effect = AssertionError('Error bodies must not be read')
+        with patch.object(api, '_public_connection') as connect:
+            connect.return_value.getresponse.return_value = response
+            with self.assertRaises(api.FanclubHTTPError) as failure:
+                api.Client({})._request('/private-fixture')
+        stop = Mock()
+        stop.is_set.side_effect = [False, True]
+        with patch.object(feed, 'poll_once', side_effect=failure.exception), self.assertLogs(feed._LOG):
+            feed.poll_loop(stop)
+        self.assertEqual(state.get_setting('takaneko_poll_error'), 'Fanclub HTTP 429')
+
+        feed.set_subscription(42, True)
+        feed.record_inventory([])
+        feed.record_inventory([{'id': 'fixture'}])
+        with patch.object(feed, 'prepare_post', side_effect=api.FanclubHTTPError(503)):
+            feed.process_once()
+        with state.db() as db:
+            self.assertEqual(db.execute('SELECT error FROM tk_posts').fetchone()[0], 'Fanclub HTTP 503')
+            self.assertEqual(db.execute('SELECT state FROM tk_deliveries').fetchone()[0], 'pending')
+            db.execute('UPDATE tk_posts SET retry_at=0')
+        with patch.object(feed, 'prepare_post', side_effect=api.MediaHTTPError(403)):
+            feed.process_once()
+        with state.db() as db:
+            self.assertEqual(db.execute('SELECT error FROM tk_posts').fetchone()[0], 'Media HTTP 403')
+
     def test_idle_process_never_contacts_upstream_or_reports_failure(self):
         with patch.object(feed, 'process_once') as process, patch.object(transport, 'report_health') as report:
             # A fresh install remains idle. An old enabled install with no session does too.

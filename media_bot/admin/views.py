@@ -1,4 +1,5 @@
 """Server-rendered Telegram service management pages."""
+from datetime import datetime, timezone
 from html import escape
 from importlib.resources import files
 from urllib.parse import urlencode
@@ -8,7 +9,8 @@ from .. import accounts, core as c, pool_checks
 
 STYLE = files(__package__).joinpath('console.css').read_text(encoding='utf-8')
 PAGES = {'': 'Bot connection', 'features': 'Features', 'users': 'Users & groups',
-         'subscriptions': 'Takaneko subscriptions', 'accounts': 'Account pools', 'keys': 'API credentials'}
+         'subscriptions': 'Takaneko subscriptions', 'accounts': 'Account pools', 'keys': 'API credentials',
+         'errors': 'Error log'}
 
 
 def page(title, body, *, signed_in=False, route=None, session_fields='', notice=''):
@@ -53,6 +55,22 @@ def button(text, action='', *, kind='', aria_label=''):
 
 def hidden_field(name, value):
     return f'<input type="hidden" name="{name}" value="{escape(str(value),quote=True)}">'
+
+
+def errors(entries):
+    rows = []
+    for entry in entries:
+        observed = entry['observed']
+        stamp = 'Time unavailable'
+        if observed is not None:
+            when = datetime.fromtimestamp(observed, timezone.utc)
+            stamp = (f'<time datetime="{when.isoformat(timespec="seconds")}">'
+                     f'{when:%Y-%m-%d %H:%M:%S} UTC</time>')
+        rows.append(f'<li><div class="error-meta"><strong>{escape(entry["source"])}</strong>'
+                    f'<span>{stamp}</span></div><p>{escape(entry["message"])}</p></li>')
+    if not rows:
+        return '<section><p>No recent errors.</p></section>'
+    return '<ol class="error-log" aria-label="Recent errors">' + ''.join(rows) + '</ol>'
 
 
 def connection(hidden):

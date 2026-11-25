@@ -4,7 +4,7 @@ import shutil
 import threading
 import time
 
-from . import core as c
+from . import core as c, error_log
 
 INTERVAL = 5
 RESERVE = 5 * 1024 ** 3
@@ -49,6 +49,22 @@ def safe_reason(message, state='failed', uncertain=False):
     return MESSAGES.get(code, MESSAGES['failed'])
 
 
+def _migrate_pending_push_alerts(db):
+    if not db.execute("SELECT 1 FROM admin_alert_queue WHERE state='pending' AND platform='push' LIMIT 1").fetchone():
+        return
+    # Previous releases stored a provider health key in the same transaction
+    # as the unscoped alert. Keep attempted notification checkpoints intact.
+    has_takaneko = db.execute("SELECT 1 FROM settings WHERE key='push_health.takaneko'").fetchone()
+    if has_takaneko:
+        other = db.execute("""SELECT 1 FROM settings WHERE key GLOB 'push_health.*'
+                              AND key!='push_health.takaneko' LIMIT 1""").fetchone()
+        if other:
+            db.execute("DELETE FROM admin_alert_queue WHERE state='pending' AND platform='push' AND reason='uncertain'")
+        else:
+            db.execute("DELETE FROM admin_alert_queue WHERE state='pending' AND platform='push'")
+    db.execute("UPDATE admin_alert_queue SET platform='push_provider' WHERE state='pending' AND platform='push'")
+
+
 def initialize():
     # Build a CASE expression from fixed, trusted literals. Triggers also run
     # on connections opened outside Python. Never copy raw error text or URLs.
@@ -58,8 +74,17 @@ def initialize():
         conditions.append(f"WHEN {predicates} THEN '{code}'")
     reason = "CASE WHEN EXISTS(SELECT 1 FROM files WHERE job=NEW.id AND state='uncertain') THEN 'uncertain' " + ' '.join(conditions) + ' ELSE NEW.state END'
     platform = "CASE WHEN NEW.platform IN ('instagram','threads','tiktok','twitter','youtube') THEN NEW.platform ELSE 'batch' END"
+    # These fixed conditions must precede the general "access denied" match.
+    uncertain = "EXISTS(SELECT 1 FROM files WHERE job=NEW.id AND state='uncertain')"
+    rejected = "NEW.message='Telegram 拒絕傳送，檔案保留待重試'"
+    diagnostic_source = f"CASE WHEN {uncertain} OR {rejected} THEN 'download_telegram' ELSE {platform} END"
+    diagnostic_reason = (f"CASE WHEN {uncertain} THEN 'download_receipt' WHEN {rejected} THEN 'send_rejected' "
+                         + ' '.join(conditions) + ' ELSE NEW.state END')
+    diagnostic = ("INSERT INTO admin_errors(observed,source,reason) "
+                  f"VALUES (strftime('%s','now'),{diagnostic_source},{diagnostic_reason});")
     db_statements = f"""
         BEGIN IMMEDIATE;
+        {error_log.SCHEMA}
         CREATE TABLE IF NOT EXISTS admin_alert_queue(
           id INTEGER PRIMARY KEY, reason TEXT NOT NULL, platform TEXT NOT NULL DEFAULT '',
           state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
@@ -83,9 +108,17 @@ def initialize():
         CREATE TRIGGER IF NOT EXISTS admin_alert_registration AFTER INSERT ON bot_users
           WHEN NEW.state != 'owner'
           BEGIN INSERT INTO admin_alert_queue(reason) VALUES ('user'); END;
+        CREATE TRIGGER IF NOT EXISTS admin_error_job_transition AFTER UPDATE OF state ON jobs
+          WHEN OLD.state IS NOT NEW.state AND NEW.state IN ('failed','partial','paused')
+          BEGIN {diagnostic} END;
+        CREATE TRIGGER IF NOT EXISTS admin_error_job_insert AFTER INSERT ON jobs
+          WHEN NEW.state IN ('failed','partial','paused')
+          BEGIN {diagnostic} END;
     """
     with c.db() as db:
         db.executescript(db_statements)
+        error_log.import_health(db)
+        _migrate_pending_push_alerts(db)
         old = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         # Retain previous delivery checkpoints separately from live queues and authorizations.
         if 'release_preview_outbox' in old or 'admin_notification_outbox' in old:
@@ -143,13 +176,14 @@ def tick(send, now=None):
         if c.get_setting('failure_alerts', True):
             _check_health(db, 'storage_health', low, now)
             _check_health(db, 'telegram', bool(enabled and isinstance(last_poll,(int,float)) and now-last_poll > 120), now)
+        _migrate_pending_push_alerts(db)
         alert = db.execute("""SELECT * FROM admin_alert_queue WHERE state='pending'
                             AND next_attempt<=? ORDER BY id LIMIT 1""",(now,)).fetchone()
         if not alert:
             return
         db.execute("UPDATE admin_alert_queue SET state='uncertain',attempts=attempts+1 WHERE id=?",(alert['id'],))
     message = MESSAGES.get(alert['reason'], MESSAGES['previous'])
-    if alert['platform'] == 'push':
+    if alert['platform'] in ('push', 'push_provider'):
         from .push import HEALTH
         message = 'Push · ' + HEALTH.get(alert['reason'], MESSAGES['previous'])
     elif alert['platform'] in PLATFORMS:

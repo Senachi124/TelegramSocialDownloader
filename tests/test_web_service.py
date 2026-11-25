@@ -95,6 +95,72 @@ class WebServiceTests(unittest.TestCase):
         self.assertIn('Save Fanclub session', body)
         self.assertNotIn('sample-secret', body)
 
+    def test_feature_switches_are_authenticated_independent_and_persistent(self):
+        from media_bot import features
+        form = {'feature': 'download_twitter', 'enabled': '0'}
+        self.assertEqual(self.request('features')[0], 303)
+        self.assertEqual(self.request('features', form=form)[0], 401)
+        cookie, csrf = self.login()
+        self.assertEqual(self.request('features', cookie=cookie, form=form)[0], 403)
+        form['csrf'] = csrf
+        self.assertEqual(self.request('features', cookie=cookie, form=form, origin='https://wrong.example')[0], 403)
+        status, body, headers = self.request('features', cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['Referrer-Policy'], 'same-origin')
+        self.assertIn('href="/bot/features" aria-current="page"', body)
+        self.assertIn('Not installed', body)
+        for label in features.LABELS.values():
+            self.assertIn(f'aria-label="Pause {label}"', body)
+        for _ in range(2):
+            status, _, headers = self.request('features', cookie=cookie, form=form)
+            self.assertEqual(status, 303)
+            self.assertEqual(headers['Location'], '/bot/features#download_twitter')
+        self.assertEqual([key for key, value in features.snapshot().items() if not value], ['download_twitter'])
+        body = self.request('features', cookie=cookie)[1]
+        self.assertIn('aria-label="Enable Twitter / X downloads"', body)
+        self.assertIn('aria-label="Pause TikTok downloads"', body)
+        for invalid in [dict(feature='enabled'), dict(feature='download_other'), dict(enabled='yes'),
+                        dict(feature='takaneko', enabled='1')]:
+            self.assertEqual(self.request('features', cookie=cookie, form={**form, **invalid})[0], 400)
+        self.assertEqual(self.request('features', cookie=cookie, form={**form, 'feature': 'translation'})[0], 303)
+        self.assertEqual(self.request('features', cookie=cookie, form={**form, 'enabled': '1'})[0], 303)
+        with self.c.db() as db:
+            self.assertEqual([key for key, value in features.snapshot(db).items() if not value], ['translation'])
+
+    def test_fanclub_switch_reflects_and_updates_provider_state(self):
+        from media_bot import push
+        entry = {'control': '/run/test-provider.sock', 'uid': 2000}
+        self.enterContext(patch.object(push, 'providers', return_value={'takaneko': entry}))
+        control = self.enterContext(patch.object(push, 'control'))
+        cookie, csrf = self.login()
+        form = {'csrf': csrf, 'feature': 'takaneko', 'enabled': '1'}
+        control.return_value = {'ok': True, 'enabled': False, 'session_configured': False}
+        status, body, _ = self.request('features', cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('Add a Fanclub session in Subscriptions', body)
+        self.assertNotIn('aria-label="Enable Takaneko Fanclub"', body)
+        control.assert_called_once_with(entry, 'feature_status')
+        control.return_value['session_configured'] = True
+        self.assertIn('aria-label="Enable Takaneko Fanclub"', self.request('features', cookie=cookie)[1])
+        control.return_value['enabled'] = True
+        status, _, headers = self.request('features', cookie=cookie, form=form)
+        self.assertEqual((status, headers['Location']), (303, '/bot/features#takaneko'))
+        control.assert_called_with(entry, 'set_enabled', enabled=True)
+        control.return_value['session_configured'] = None
+        self.assertIn('aria-label="Pause Takaneko Fanclub"', self.request('features', cookie=cookie)[1])
+        control.side_effect = push.FanclubSessionRequired()
+        self.assertEqual(self.request('features', cookie=cookie, form=form)[0], 400)
+        control.side_effect = OSError('test socket unavailable')
+        status, body, _ = self.request('features', cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('Unavailable', body)
+        self.assertIn('aria-label="Pause TikTok downloads"', body)
+        self.assertEqual(self.request('features', cookie=cookie, form=form)[0], 503)
+        control.side_effect = None
+        for reply in ({'ok': True}, {'ok': True, 'enabled': False, 'session_configured': True}):
+            control.return_value = reply
+            self.assertEqual(self.request('features', cookie=cookie, form=form)[0], 503)
+
     def test_login_access_pools_api_and_subscriptions(self):
         from media_bot import access
         self.assertEqual(self.request('users')[0],303)

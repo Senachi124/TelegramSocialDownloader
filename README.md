@@ -18,11 +18,14 @@ Download media in Telegram and receive subscriptions from connected services. Th
 
 | Control | Actions |
 | --- | --- |
+| Features | Enable or pause Instagram, TikTok, X, Threads and YouTube downloads independently. Switch Telegram translation and OCR on or off, and control the installed Takaneko provider. |
 | Users and groups | Review requests, approve or revoke users, set the access policy and manage registered groups. The configured owner has additional Telegram controls. |
 | Subscriptions | Connect your Takaneko Fanclub session, subscribe or unsubscribe approved users, and see provider health. Each provider owns its subscriber list and delivery progress. |
 | Account pools | Import or update platform cookies, enable or disable an account, select a primary account or rotation policy, and test an account against a supplied post. |
 | APIs | Configure the bot token, Telegram Local Bot API credentials and translation API keys. |
-| Operations | Pause or resume downloads, adjust platform limits and manage failure notifications. A failure alert includes the reason. |
+| Connection | Pause or resume Telegram polling and processing, adjust platform limits and manage failure notifications. A failure alert includes the reason. |
+
+Open **Features** in the web console and choose **Pause** or **Enable** beside the function you want to change. The setting takes effect without a restart and survives upgrades. An existing batch waits when it reaches a paused platform and resumes in order when you enable it again. Work already in progress can finish. If a new message includes links from a paused platform, the bot names the platform so the user can resend the other links. Account pools, API keys and subscriptions are managed separately.
 
 ## How actions flow
 
@@ -31,15 +34,17 @@ flowchart TD
     A[User sends message] --> B{Access allowed?}
     B -->|No| C[Show access status]
     B -->|Yes| D{Request}
-    D -->|Media link| E[Queue download with user preferences]
+    D -->|Media link| V{Requested platforms enabled?}
+    V -->|Yes| E[Queue download with user preferences]
+    V -->|No| W[Show paused platforms]
     E --> F[Select platform account and fetch media]
     F -->|Ready| G[Send album, file or expiring link]
     F -->|Failure| H[Explain reason to user]
     H --> I[Notify owner when alerts are enabled]
-    D -->|Translate| J[Translate text or images and reply]
+    D -->|Translation enabled| J[Translate text or images and reply]
     K[Admin signs in] --> L[Manage accounts, access and subscriptions]
     L --> M[Provider updates subscription]
-    T[Fanclub account] --> N[Takaneko detects new posts]
+    T[Fanclub account and enabled provider] --> N[Takaneko detects new posts]
     N --> O[Queue a delivery for each subscriber]
     O --> P[Bot checks provider identity and user access]
     P -->|Allowed| Q[Send update to Telegram]
@@ -83,7 +88,7 @@ Put media and temporary files on the same filesystem under `MEDIA_BOT_DATA`. The
 
 ### Takaneko Fanclub
 
-Enable the bundled provider on your own Linux host, then sign in to the bot’s web console. Under **Subscriptions → takaneko**, save your own Fanclub session and subscribe the Telegram users you have approved. The first successful poll records a baseline. Subsequent posts go to eligible subscribers. See the [Takaneko setup guide](docs/takaneko.md).
+Takaneko is optional. For a bot that only downloads media, you can skip the provider installation and Fanclub credentials. To send Fanclub updates, install the bundled provider, save your session in **Subscriptions → takaneko** and choose **Enable** beside **Takaneko Fanclub** in **Features**. Subscribe approved Telegram users in **Subscriptions**. The first successful poll records a baseline. Subsequent posts go to eligible subscribers. See the [Takaneko setup guide](docs/takaneko.md).
 
 ### Source layout
 

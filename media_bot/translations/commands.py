@@ -8,7 +8,7 @@ import time
 
 import requests
 
-from .. import access, bot_ui, command_reply, core as c, group_download, limits, storage
+from .. import access, bot_ui, command_reply, core as c, features, group_download, limits, storage
 from . import albums as translation_albums, image_cache as translation_cache, ocr as batch_ocr
 from .replies import TELEGRAM_TEXT_UNITS, reply_chunks
 from .sources import (
@@ -32,6 +32,7 @@ HELP = '請輸入 /translate 加上文字，或回覆一段引文、圖片或相
 PROMPT = '請在 10 分鐘內回覆這則提示，輸入待翻譯的文字或附上一張圖片（上限 5 MB）。'
 PROCESSING = '翻譯中…'
 EXPIRED = '這則翻譯提示已失效，請重新輸入 /translate。'
+DISABLED = '管理員目前已停用翻譯與圖片文字辨識。'
 # Only the single translation consumer reads and writes these receipt IDs.
 _prompts = OrderedDict()
 
@@ -362,20 +363,14 @@ def _handle_image_reply(message, match, telegram, token, reply, bot_username):
     return True
 
 
-def handle(message, telegram, token, reply, *, bot_username=None):
+def handle(message, telegram, token, reply, *, bot_username=None, admitted=True, busy=False):
     if not c.get_setting('enabled', False) or not eligible(message):
         return
     match = command(message)
     responding = prompt_reply(message)
-    if responding:
-        receipt = _receipt(message, message['reply_to_message'].get('message_id'))
-        if _prompts.pop(receipt, 0) <= time.monotonic():
-            telegram('sendMessage', {**reply, 'text': EXPIRED})
-            return
-        match = None
-    elif match is None:
+    if not match and not responding and admitted and not busy:
         return
-    elif message['chat']['type'] in ('group', 'supergroup') and match[1] is None:
+    if match and message['chat']['type'] in ('group', 'supergroup') and match[1] is None:
         scope = {'type': 'chat', 'chat_id': message['chat']['id']}
         if bot_ui.is_owner(_actor(message)):
             scope.update(type='chat_member', user_id=_actor(message))
@@ -384,8 +379,20 @@ def handle(message, telegram, token, reply, *, bot_username=None):
             commands = telegram('getMyCommands', {'scope': {'type': 'chat', 'chat_id': scope['chat_id']}})
         if not any(item['command'] == 'translate' for item in commands):
             return
-    if _handle_image_reply(message, match, telegram, token, reply, bot_username):
+    if not admitted or not features.enabled('translation'):
+        telegram('sendMessage', {**reply, 'text': DISABLED})
         return
+    if busy:
+        telegram('sendMessage', {**reply, 'text': '翻譯忙碌中，請稍後再試。'})
+        return
+    if responding:
+        receipt = _receipt(message, message['reply_to_message'].get('message_id'))
+        if _prompts.pop(receipt, 0) <= time.monotonic():
+            telegram('sendMessage', {**reply, 'text': EXPIRED})
+            return
+        match = None
+    if _handle_image_reply(message, match, telegram, token, reply, bot_username):
+        return True
     text, photo = _source(message, match)
     status_id = None
     if not text.strip() and photo is None:
@@ -396,7 +403,7 @@ def handle(message, telegram, token, reply, *, bot_username=None):
             _prompts[_receipt(message, sent['message_id'])] = time.monotonic() + 600
             if len(_prompts) > 128:
                 _prompts.popitem(last=False)
-            return
+            return True
         result = HELP
     else:
         try:
@@ -420,6 +427,7 @@ def handle(message, telegram, token, reply, *, bot_username=None):
         _send_image_pages(message, [result], telegram, reply, status_id)
     else:
         _send_result(result, telegram, reply, status_id)
+    return True
 
 
 def _send_result(result, telegram, reply, status_id):

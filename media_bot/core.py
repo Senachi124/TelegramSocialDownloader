@@ -286,20 +286,31 @@ def reserve_media(platform,item,at=None):
         con.execute('INSERT INTO media_budget VALUES (?,?,?)',(platform,item,now))
     return True
 
+class ResolutionDeferred(Exception):
+    """The next redirect hop belongs to a disabled download platform."""
+    def __init__(self, url, platform):
+        super().__init__(platform)
+        self.url = url
+        self.platform = platform
+
+
 def resolve(url):
     """Pinned public address on each HTTPS hop; no cookies on redirect requests."""
+    from . import features
     threads_share=urlsplit(validate_url(url)).hostname in THREADS_HOSTS
     for _ in range(6):
         url=validate_url(url); p=urlsplit(url)
         if threads_share and p.hostname not in THREADS_HOSTS:raise ValueError('Threads 分享連結目的地不允許')
-        if classify(url)[1]!='resolve':return url
+        platform,mode=classify(url)
+        if mode!='resolve':return url
+        if not features.download_enabled(platform):
+            raise ResolutionDeferred(url, platform)
         addresses=socket.getaddrinfo(p.hostname,443,type=socket.SOCK_STREAM)
         if not addresses or any(not ipaddress.ip_address(x[4][0]).is_global for x in addresses):raise ValueError('連結目的地不允許')
         address=addresses[0][4][0]
         conn=http.client.HTTPSConnection(p.hostname,timeout=20)
         conn._create_connection=lambda destination,timeout,source_address=None:socket.create_connection((address,443),timeout)
         try:
-            platform=classify(url)[0]
             conn.request('GET',p.path+('?' + p.query if p.query else ''),headers={'User-Agent':'Mozilla/5.0'})
             r=conn.getresponse()
             if r.status==429:
@@ -340,7 +351,7 @@ def _group_destination(group_chat_id, message_id, thread_id):
 
 
 def enqueue(key,chat,url,*,preferences=None,group_chat_id=None,original_message_id=None,message_thread_id=None):
-    from . import access
+    from . import access, features
     url=validate_url(url);platform,mode=classify(url)
     snapshot=_serialized_preferences(preferences)
     destination=_group_destination(group_chat_id, original_message_id, message_thread_id)
@@ -355,6 +366,7 @@ def enqueue(key,chat,url,*,preferences=None,group_chat_id=None,original_message_
         if not access.allowed(chat,c):raise ValueError('此帳號尚未獲准使用')
         old=c.execute('SELECT id FROM jobs WHERE update_key=?',(key,)).fetchone()
         if old:return old[0]
+        features.require_downloads((platform,), c)
         count=c.execute("SELECT count(*) FROM jobs WHERE state IN ('choice','queued','running','cooldown','sending','paused')").fetchone()[0]
         if count>=100:raise ValueError('佇列已滿，請等待現有工作完成')
         job=secrets.token_hex(8)
@@ -371,7 +383,7 @@ def enqueue_batch(key,chat,urls,message_id,*,preferences=None,group_chat_id=None
     Batch post links download the post; single-link enqueue retains its choice UI.
     Duplicate URLs remain distinct items in their original order.
     """
-    from . import access
+    from . import access, features
     if not urls:raise ValueError('請貼上下載連結')
     if len(urls)>50:raise ValueError('每個工作最多支援 50 個連結，請分成多則訊息')
     snapshot=_serialized_preferences(preferences)
@@ -395,6 +407,7 @@ def enqueue_batch(key,chat,urls,message_id,*,preferences=None,group_chat_id=None
         if not access.allowed(chat,con):raise ValueError('此帳號尚未獲准使用')
         old=con.execute('SELECT id FROM jobs WHERE update_key=?',(key,)).fetchone()
         if old:return old[0]
+        features.require_downloads((item[2] for item in items if item[4]=='pending'), con)
         count=con.execute("SELECT count(*) FROM jobs WHERE state IN ('choice','queued','running','cooldown','sending','paused')").fetchone()[0]
         if count>=100:raise ValueError('佇列已滿，請等待現有工作完成')
         job=secrets.token_hex(8)

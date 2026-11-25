@@ -18,9 +18,9 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import admin_auth, local_socket
 from . import core as c, links
-from .admin import views as layout
-from .admin.actions import ACCOUNT_RESUME_MAX_AGE, FormError, manage, resume_accounts
-from .admin.forms import parse_form
+from .admin import feature_controls, views as layout
+from .admin.actions import ACCOUNT_RESUME_MAX_AGE, manage, resume_accounts
+from .admin.forms import FormError, parse_form
 
 DEPLOYMENT_RECEIPT = Path('/var/lib/telegram-social-deploy/status.json')
 TTL = 3 * 86400
@@ -38,7 +38,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def respond(self,status,body='',headers=(),mime='text/html; charset=utf-8'):
         raw=body.encode() if isinstance(body,str) else body
         self.send_response(status);self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(raw)))
-        self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','no-referrer')
+        self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','same-origin')
         self.send_header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
         self.send_header('X-Content-Type-Options','nosniff')
         for k,v in headers:self.send_header(k,v)
@@ -80,7 +80,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.form()
             if re.fullmatch(r'download/[A-Za-z0-9_-]{43}',route):
                 return links.serve_download(self,route.split('/')[1],self.command=='HEAD')
-            panels = {'':'Bot connection','users':'Users and groups','subscriptions':'Subscriptions','accounts':'Account pools','keys':'API credentials'}
+            panels = {'':'Bot connection','features':'Features','users':'Users and groups','subscriptions':'Subscriptions','accounts':'Account pools','keys':'API credentials'}
             if route not in panels:
                 return self.respond(404,'Not found')
             signed_in = session(self.cookies().get('mb_session'))
@@ -92,6 +92,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not re.fullmatch(r'[0-9]{1,7}',offset):
                     return self.respond(400,'Invalid page')
                 body = layout.users(hidden,int(offset))
+            elif route=='features':
+                body = feature_controls.panel(hidden)
             elif route=='subscriptions':
                 from . import push
                 body = push.web_panel(hidden)
@@ -102,7 +104,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 body = layout.connection(hidden)
             body += layout.form('logout',hidden,layout.button('Sign out'))
-            return self.respond(200,layout.page(panels[route],body,signed_in=True))
+            return self.respond(200,layout.page(panels[route],body,signed_in=True,route=route))
         except (OSError,ValueError,KeyError):
             return self.respond(503,'Service settings are temporarily unavailable.')
 
@@ -135,6 +137,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.redirect(c.BASE,[self.cookie('mb_session',token),self.cookie('mb_login_csrf','',0)])
 
     def do_POST(self):
+        route = None
         try:
             if self.headers.get('Origin')!=c.ORIGIN:
                 return self.respond(403,'Origin mismatch')
@@ -164,7 +167,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.redirect(c.BASE+target)
         except (ValueError,KeyError,OverflowError) as error:
             message = str(error) if isinstance(error,FormError) else 'Invalid form or credential settings.'
-            return self.respond(400,layout.page('Update failed',f'<p role="alert">{escape(message)}</p><a href="{c.BASE}">Return to settings</a>',signed_in=True))
+            status = error.status if isinstance(error,FormError) else 400
+            target, label = ('features', 'Return to Features') if route=='features' else ('', 'Return to settings')
+            body = f'<p role="alert">{escape(message)}</p><a href="{c.BASE}{target}">{label}</a>'
+            return self.respond(status,layout.page('Update failed',body,signed_in=True))
         except Exception:
             return self.respond(503,'The service is unavailable. Check the connection and try again.')
 

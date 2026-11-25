@@ -47,6 +47,8 @@ def request(uid, req, fd):
         except FileNotFoundError:
             value = {}
         session = value.get('session', {})
+        if req.get('op') == 'session_status':
+            return {'ok': True, 'session_configured': bool(session)}
         if uid == 0 and req.get('op') == 'replace':
             save(normalize_credentials(req.get('credentials')))
             return {'ok': True}

@@ -16,13 +16,22 @@ label input:not([type=checkbox]),label textarea,label select{display:block;width
 button{background:#134955;color:white;cursor:pointer;margin:.2rem .25rem .2rem 0}summary{cursor:pointer;font-weight:650}
 ul{padding-left:1.4rem}li{margin:.7rem 0}fieldset{padding:.6rem 1rem;margin:1rem 0;border:1px solid #d7dfe2}
 :focus-visible{outline:3px solid #00869c;outline-offset:2px}dt{font-weight:600}dd{margin:0 0 .65rem}
+nav [aria-current=page]{font-weight:700;text-decoration-thickness:.15em}
+.feature-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.5rem 1rem;padding:.65rem 0}
+.feature-row+.feature-row{border-top:1px solid #d7dfe2}.feature-row h3,.feature-row p{margin:0}
+.feature-row h3{font-size:1rem}.feature-row button{min-height:2.75rem;min-width:5.5rem;margin:0}
+.feature-state{color:#425761}.feature-on{color:#175c46}
 """
 
 
-def page(title, body, *, signed_in=False):
-    routes = [('','Connection'), ('users','Users & groups'), ('subscriptions','Subscriptions'),
+def page(title, body, *, signed_in=False, route=None):
+    routes = [('','Connection'), ('features','Features'), ('users','Users & groups'), ('subscriptions','Subscriptions'),
               ('accounts','Account pools'), ('keys','API keys')]
-    navigation = ''.join(f'<a href="{c.BASE}{path}">{label}</a>' for path,label in routes) if signed_in else ''
+    navigation = ''
+    if signed_in:
+        for path, label in routes:
+            current = ' aria-current="page"' if path == route else ''
+            navigation += f'<a href="{c.BASE}{path}"{current}>{label}</a>'
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<meta name="robots" content="noindex,nofollow"><title>{escape(title)} · Telegram Social Downloader</title>'

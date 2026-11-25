@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
-from . import accounts, core as c, storage, video
+from . import accounts, core as c, features, storage, video
 
 
 FORM_ERRORS = {
@@ -19,6 +19,7 @@ FORM_ERRORS = {
     'missing': 'Enter a media post URL for this platform.',
     'disabled': 'Enable the downloader before testing.',
     'busy': 'Another check is already in progress.',
+    'feature': 'Enable downloads for this platform in Features before testing.',
 }
 def frozen():
     import os
@@ -66,6 +67,8 @@ def start(platform, url=''):
         raise ValueError(FORM_ERRORS['disabled'])
     with c.db() as db:
         db.execute('BEGIN IMMEDIATE')
+        if not features.download_enabled(platform, db):
+            raise ValueError(FORM_ERRORS['feature'])
         previous = db.execute('SELECT url,explicit,state,requested FROM admin_pool_checks WHERE platform=?',
                               (platform,)).fetchone()
         now = time.time()
@@ -197,6 +200,8 @@ def _run(check):
     platform = check['platform']
     if frozen() or not c.get_setting('enabled', False):
         return 'skipped', FORM_ERRORS['disabled']
+    if not features.download_enabled(platform):
+        return 'skipped', FORM_ERRORS['feature']
     until = c.get_setting(platform + '_cooldown', 0)
     if until > time.time():
         return 'skipped', 'The platform is cooling down. Retry after ' + _until(until) + ' HKT.'

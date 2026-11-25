@@ -65,7 +65,12 @@ def main():
             parser.exit(1, 'Credential import failed. Check the JSON and broker status.\n')
         print('Provider credentials saved.')
     elif args.command in ('enable', 'disable'):
-        feed.set_enabled(args.command == 'enable')
+        try:
+            result = transport.feature_control(args.command == 'enable')
+        except (OSError, RuntimeError, ValueError):
+            parser.exit(1, 'Fanclub session status unavailable. Check the credential broker.\n')
+        if result.get('error') == 'session_required':
+            parser.exit(1, 'Save a Fanclub session before enabling notifications.\n')
     elif args.command == 'retry':
         feed.retry_delivery(args.delivery)
     elif args.command == 'resolve':

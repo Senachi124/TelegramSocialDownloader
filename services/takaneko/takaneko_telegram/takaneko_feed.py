@@ -57,7 +57,7 @@ def initialize():
         CREATE TABLE IF NOT EXISTS tk_link_retention(path TEXT PRIMARY KEY,post_id TEXT NOT NULL,
           expires REAL NOT NULL);
         ''')
-        db.execute("INSERT OR IGNORE INTO settings VALUES ('takaneko_enabled','true')")
+        db.execute("INSERT OR IGNORE INTO settings VALUES ('takaneko_enabled','false')")
 
 
 def subscribed(user_id, db=None):
@@ -77,7 +77,22 @@ def set_subscription(user_id, enabled):
             db.execute('DELETE FROM tk_links WHERE delivery_id IN (SELECT id FROM tk_deliveries WHERE user_id=?)',(user_id,))
 
 
-def set_enabled(enabled):c.setting('takaneko_enabled',bool(enabled))
+def is_enabled(db=None):
+    if db is None:
+        with c.db() as db:
+            return is_enabled(db)
+    row = db.execute("SELECT value FROM settings WHERE key='takaneko_enabled'").fetchone()
+    return bool(row and row[0] == 'true')
+
+
+def set_enabled(enabled):
+    with c.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if enabled == is_enabled(db):
+            return
+        db.execute("INSERT OR REPLACE INTO settings VALUES ('takaneko_enabled', ?)", (json.dumps(enabled),))
+        if enabled:
+            db.execute("INSERT OR REPLACE INTO settings VALUES ('takaneko_next_poll', '0')")
 
 
 def record_inventory(posts):
@@ -90,6 +105,8 @@ def record_inventory(posts):
     now=time.time()
     with c.db() as db:
         db.execute('BEGIN IMMEDIATE')
+        if not is_enabled(db):
+            return
         known={row[0] for row in db.execute('SELECT id FROM tk_posts')}
         initial=not db.execute("SELECT 1 FROM settings WHERE key='takaneko_initialized' AND value='true'").fetchone()
         users=[r[0] for r in db.execute("SELECT user_id FROM tk_subscriptions WHERE enabled=1")]
@@ -124,6 +141,8 @@ def persist_session(client, original):
 def poll_once(client=None):
     from .takaneko_api import Client
     with _AUTH_LOCK:
+        if not is_enabled():
+            return 0
         original={}
         if client is None:
             original=credentials().get('session',{})
@@ -295,7 +314,7 @@ def download_link(token):
 
 
 def enabled_for(delivery):
-    return delivery['post_id'] not in EXCLUDED_POSTS and c.get_setting('takaneko_enabled',False) and subscribed(delivery['user_id'])
+    return delivery['post_id'] not in EXCLUDED_POSTS and is_enabled() and subscribed(delivery['user_id'])
 
 
 def send_part(delivery,part,send):
@@ -319,7 +338,9 @@ def send_part(delivery,part,send):
         try:return send('send'+kind.title(),data,{kind:file})
         except TelegramError as error:
             if error.code!=400 or kind=='document':raise
-            if not enabled_for(delivery):raise
+            # This part already owns a send checkpoint. Complete its fallback
+            # while a feature pause holds subsequent parts at their claim boundary.
+            if not subscribed(delivery['user_id']):raise
             stream.seek(0)
             return send('sendDocument',{'chat_id':delivery['user_id']},{'document':file})
 
@@ -408,7 +429,7 @@ def deliver(delivery,send=None):
         if not enabled_for(delivery):return
         with c.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            if not subscribed(delivery['user_id'],db):return
+            if not is_enabled(db) or not subscribed(delivery['user_id'],db):return
             state=db.execute('SELECT state FROM tk_deliveries WHERE id=?',(delivery['id'],)).fetchone()[0]
             if state not in ('pending','ready'):return
             db.execute("UPDATE tk_parts SET state='uncertain' WHERE delivery_id=? AND position=?",(delivery['id'],part['position']))
@@ -455,7 +476,7 @@ def resolve_uncertain(delivery_id,action):
 
 
 def process_once():
-    if not c.get_setting('takaneko_enabled',False):return
+    if not is_enabled():return
     _flush_cooldown()
     with c.db() as db:
         # Also fence stale/restored rows before selection, retaining receipts.
@@ -532,7 +553,7 @@ def poll_loop(stop=None):
     while not stop.is_set():
         try:
             with deployment_guard() as available:
-                if available and c.get_setting('takaneko_enabled',False):
+                if available and is_enabled():
                     now = time.time()
                     if now >= c.get_setting('takaneko_next_poll',0):
                         c.setting('takaneko_next_poll',now+POLL_SECONDS)
@@ -540,6 +561,23 @@ def poll_loop(stop=None):
         except Exception as error:
             _report_error('takaneko_poll_error','Takaneko 清單暫時不可用；將自動重試',error)
         stop.wait(2)
+
+
+def process_cycle(last_health):
+    cleanup_links()
+    if not is_enabled():
+        return last_health
+    configured = transport.session_configured()
+    if configured is False:
+        return last_health
+    if configured:
+        process_once()
+    if time.monotonic() - last_health >= 30 and is_enabled():
+        transport.report_health(credentials_unavailable=configured is None)
+        if configured:
+            c.setting_many({'takaneko_process_error': '', 'takaneko_last_process': time.time()})
+        return time.monotonic()
+    return last_health
 
 
 def run(stop=None):
@@ -563,12 +601,7 @@ def run(stop=None):
                         if not available:
                             stop.wait(2)
                             continue
-                        cleanup_links()
-                        process_once()
-                        if time.monotonic()-last_health>=30:
-                            transport.report_health()
-                            c.setting_many({'takaneko_process_error':'','takaneko_last_process':time.time()})
-                            last_health=time.monotonic()
+                        last_health = process_cycle(last_health)
                 except Exception as error:
                     _report_error('takaneko_process_error','通知處理暫時不可用；將自動重試，進度已保留',error)
                 stop.wait(2)

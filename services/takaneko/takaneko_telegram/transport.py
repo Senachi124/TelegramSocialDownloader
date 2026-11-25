@@ -53,14 +53,40 @@ def telegram(method, data, files=None):
 def secret(operation, fields=None):
     result = exchange(os.getenv('TAKANEKO_SECRET_SOCKET', '/run/telegram-takaneko-broker/broker.sock'),
                       pwd.getpwnam(os.getenv('TAKANEKO_BROKER_USER', 'root')).pw_uid,
-                      dict(op=operation, **(fields or {})))
+                      dict(op=operation, **(fields or {})), timeout=3 if operation == 'session_status' else 15)
     if result.get('ok') is not True:
         raise RuntimeError('Producer credentials unavailable')
     return result
 
 
-def report_health():
+def session_configured():
+    try:
+        configured = secret('session_status').get('session_configured')
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return configured if type(configured) is bool else None
+
+
+def feature_control(enabled=None):
+    from . import takaneko_feed as feed
+    if enabled is False:
+        feed.set_enabled(False)
+    configured = session_configured()
+    if enabled is True:
+        if configured is None:
+            raise RuntimeError('Fanclub session status unavailable')
+        if configured is False:
+            return {'ok': False, 'error': 'session_required'}
+        feed.set_enabled(True)
+    if enabled is None:
+        enabled = feed.is_enabled()
+    return {'ok': True, 'enabled': enabled, 'session_configured': configured}
+
+
+def report_health(*, credentials_unavailable=False):
     from . import state as c
+    if credentials_unavailable:
+        return _call({'op': 'health', 'status': 'account'})
     # Send only stable reasons for open work, independent of article contents.
     with c.db() as db:
         failed = db.execute("""SELECT p.error FROM tk_posts p WHERE p.error!=''
@@ -92,13 +118,19 @@ def control(uid, request, fd):
             db.execute('SELECT 1 FROM tk_subscriptions LIMIT 0')
         secret('health')
         return {'ok': True}
+    if op == 'feature_status':
+        return feature_control()
+    if op == 'set_enabled':
+        if type(request.get('enabled')) is not bool:
+            return {'ok': False}
+        return feature_control(request['enabled'])
     if op == 'set_session':
         secret('set_session', {'session': request.get('session')})
         return {'ok': True}
     if op == 'list':
         with c.db() as db:
             users = [row[0] for row in db.execute('SELECT user_id FROM tk_subscriptions WHERE enabled=1')]
-        return {'ok': True, 'users': users, 'capabilities': ['set_session']}
+        return {'ok': True, 'users': users, 'capabilities': ['set_session', 'set_enabled']}
     user_id = request.get('user_id')
     if type(user_id) is not int or not 0 < user_id < 2**63:
         return {'ok': False}

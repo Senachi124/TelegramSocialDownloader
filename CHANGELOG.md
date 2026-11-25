@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a Features page to the web console for individual download platforms, Telegram translation and OCR, and the optional Takaneko Fanclub service. Paused download platforms and Fanclub subscriptions retain pending work. New Fanclub installations start paused.
+- Fix browser sign-in and settings updates when the browser applies the console’s referrer policy to form submissions.
 - Organize platform adapters, worker processing, translation and web administration into focused modules. Existing service commands and platform import paths remain available.
 
 ## 1.1.1 — 2026-11-25

@@ -42,6 +42,10 @@ for attempt in range(30):
         time.sleep(1)
     else:
         assert reply['ok'] and reply['users'] == [] and 'set_session' in reply['capabilities']
+        assert exchange(path, uid, {'op': 'feature_status'}) == {
+            'ok': True, 'enabled': False, 'session_configured': False}
+        assert exchange(path, uid, {'op': 'set_enabled', 'enabled': True}) == {
+            'ok': False, 'error': 'session_required'}
         break
 else:
     raise RuntimeError('Takaneko control socket did not start')

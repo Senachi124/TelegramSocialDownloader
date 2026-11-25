@@ -29,9 +29,15 @@ def providers():
     return configured
 
 
+class FanclubSessionRequired(ValueError):
+    pass
+
+
 def control(entry, operation, **fields):
     reply = push_socket.exchange(entry['control'], entry['uid'], {'op': operation, **fields})
     if reply.get('ok') is not True:
+        if operation == 'set_enabled' and reply.get('error') == 'session_required':
+            raise FanclubSessionRequired('Save a Fanclub session before enabling notifications.')
         raise ValueError('Subscription service unavailable')
     return reply
 

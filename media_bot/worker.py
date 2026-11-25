@@ -16,7 +16,7 @@ import time
 from zoneinfo import ZoneInfo
 from . import core as c
 from . import access,tiktok,video,inbox,accounts,twitter,threads,pool_checks
-from . import links,group_download,group_menu,limits,storage
+from . import features,links,group_download,group_menu,limits,storage
 from .translations import commands as translation
 from .processing import capture as capture_process
 from .processing.capture import CaptureStorageError, CaptureTimeout, disk_ok
@@ -129,9 +129,12 @@ def handle_update(u, *, from_inbox=False):
             db.execute('BEGIN IMMEDIATE')
             if not access.allowed(chat['id'],db):return
             changed=db.execute("UPDATE jobs SET state='queued',mode=? WHERE id=? AND state='choice'",(parts[1],job['id'])).rowcount
-        with contextlib.suppress(Exception):telegram('answerCallbackQuery',{'callback_query_id':q['id'],'text':'已加入佇列' if changed else '此工作已處理'})
+            reply='已加入佇列' if changed else '此工作已處理'
+            if changed and not features.download_enabled(job['platform'], db):
+                reply='已儲存選擇，等待 '+accounts.LABELS[job['platform']]+' 下載重新啟用。'
+        with contextlib.suppress(Exception):telegram('answerCallbackQuery',{'callback_query_id':q['id'],'text':reply})
         if changed:
-            status(job,'已加入佇列');WAKE[job['platform']].set()
+            status(job,reply);WAKE[job['platform']].set()
         return
     m=u.get('message',{});chat=m.get('chat',{})
     if chat.get('type')!='private' or m.get('from',{}).get('is_bot'):return
@@ -192,20 +195,25 @@ def _admit_translation(message):
     if not translation.authorized(message,match,bot_username):return
     thread=message.get('message_thread_id') if message.get('is_topic_message') else None
     reply=group_reply(message['chat']['id'],message['message_id'],thread)
-    try:_TRANSLATIONS.put_nowait((message,reply))
+    admitted = features.enabled('translation')
+    # Notices need the actor and command scope for authorization at dispatch.
+    notice = {'chat': {'id': reply['chat_id'], 'type': message['chat']['type']},
+              'from': {'id': message['from']['id']}, 'text': match[0] if match else ''}
+    try:_TRANSLATIONS.put_nowait((message if admitted else notice,reply,admitted))
     except Full:
         # Report one burst from the translation consumer, outside the polling thread.
         with contextlib.suppress(Full):
-            _TRANSLATION_BUSY.put_nowait(reply)
+            _TRANSLATION_BUSY.put_nowait((notice,reply,admitted))
 
 
 def _translation_loop():
     while True:
-        message,reply=_TRANSLATIONS.get()
+        message,reply,admitted=_TRANSLATIONS.get()
         try:
-            translation.handle(message,telegram,lambda: _transport.token,reply,bot_username=bot_username)
+            handled=translation.handle(message,telegram,lambda: _transport.token,reply,
+                                       bot_username=bot_username,admitted=admitted)
             match=translation.command(message)
-            if match and match[1] and not translation.prompt_reply(message) and message['chat']['type'] in ('group','supergroup'):
+            if handled and match and match[1] and not translation.prompt_reply(message) and message['chat']['type'] in ('group','supergroup'):
                 try:
                     group_menu.publish(message['from']['id'],message['chat']['id'],telegram)
                 except Exception:
@@ -216,11 +224,12 @@ def _translation_loop():
             _TRANSLATIONS.task_done()
             del message,reply
         try:
-            busy_reply=_TRANSLATION_BUSY.get_nowait()
+            notice,busy_reply,admitted=_TRANSLATION_BUSY.get_nowait()
         except Empty:
             continue
         try:
-            telegram('sendMessage',{**busy_reply,'text':'翻譯忙碌中，請稍後再試。'})
+            translation.handle(notice,telegram,lambda: _transport.token,busy_reply,
+                               bot_username=bot_username,admitted=admitted,busy=True)
         except Exception:
             logging.getLogger(__name__).warning('Translation busy notice unavailable')
         finally:
@@ -325,8 +334,20 @@ def _report_account(platform, credential, result):
         })
 
 
+def _start_download(job):
+    # Serialize the start of an item with the admin switch. A pause after this
+    # commit leaves this item in flight. A pause before it preserves its checkpoint.
+    with c.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if not features.download_enabled(job['platform'], db):
+            return False
+        return bool(db.execute("""UPDATE jobs SET state='running'
+            WHERE id=? AND platform=? AND state IN ('queued','running','cooldown')
+            AND cancel=0 AND retry_at<=?""", (job['id'], job['platform'], time.time())).rowcount)
+
+
 def download(job):
-    if cancelled(job):return False
+    if cancelled(job) or not _start_download(job):return False
     platform=job['platform'];label=accounts.LABELS[platform]
     retry=c.get_setting(platform+'_cooldown',0)
     if retry>time.time():
@@ -400,6 +421,17 @@ def _batch_notify_errors(job):
         with c.db() as db:db.execute('UPDATE batch_items SET error_notified=2 WHERE job=? AND position=?',(job['id'],item['position']))
     return True
 
+def _resolve_download(url):
+    try:
+        url = c.resolve(url)
+    except c.ResolutionDeferred as hop:
+        return hop.url, hop.platform, 'resolve'
+    platform, mode = c.classify(url)
+    if mode == 'resolve':
+        raise ValueError('不支援的分享連結')
+    return url, platform, mode
+
+
 def process_batch(job):
     """Process one durable item, then hand the parent to its next platform."""
     if cancelled(job):
@@ -419,13 +451,14 @@ def process_batch(job):
     # the next platform, or be reached following an administrator retry.
     if item['platform']!=job['platform']:
         _batch_next(job);return
+    if not _start_download(job):
+        return
     try:
         if item['mode']=='resolve':
             status(job,'正在解析分享連結')
             retry=c.get_setting(item['platform']+'_cooldown',0)
             if retry>time.time():raise c.RateLimited(retry)
-            url=c.resolve(item['url']);platform,mode=c.classify(url)
-            if mode=='resolve':raise ValueError('不支援的分享連結')
+            url,platform,mode=_resolve_download(item['url'])
             from . import preferences
             mode,notice=preferences.route(platform,mode,url,json.loads(job.get('preferences') or '{}').get(platform,{}))
             preferences.record_notice(job['id'],notice)
@@ -514,6 +547,19 @@ def deliver(job):
     from . import preferences
     transition(job,message+preferences.notice_text(job['id']),state='partial' if partial else 'completed',delivered=time.time())
 
+def _next_job(db, platform, now):
+    # A disabled capture must not block outstanding sends, batch finalization
+    # or a handoff left between item completion and the next worker after a crash.
+    eligible = ''
+    if not features.download_enabled(platform, db):
+        eligible = """AND (state='sending' OR (mode='batch' AND platform IS NOT (
+            SELECT b.platform FROM batch_items b WHERE b.job=jobs.id AND b.state='pending'
+            ORDER BY b.position LIMIT 1)))"""
+    return db.execute("""SELECT * FROM jobs WHERE platform=? AND retry_at<=?
+        AND state IN ('queued','running','cooldown','sending') """ + eligible +
+        ' ORDER BY created LIMIT 1', (platform, now)).fetchone()
+
+
 def platform_loop(platform,stop=None):
     stop=stop or threading.Event()
     while not stop.is_set():
@@ -525,7 +571,7 @@ def platform_loop(platform,stop=None):
             if needs_cancel:
                 c.retry_write(lambda db:db.execute("UPDATE jobs SET state='cancelled' WHERE cancel=1 AND state IN ('choice','queued','running','cooldown','sending','paused')"))
             with c.db() as db:
-                row=db.execute("SELECT * FROM jobs WHERE platform=? AND state IN ('queued','running','cooldown','sending') AND retry_at<=? ORDER BY created LIMIT 1",(platform,time.time())).fetchone()
+                row=_next_job(db, platform, time.time())
                 check=db.execute("SELECT requested,state FROM admin_pool_checks WHERE platform=? AND state IN ('queued','running')",(platform,)).fetchone()
             if check and check['state']=='running':
                 pool_checks.recover(platform)
@@ -539,26 +585,24 @@ def platform_loop(platform,stop=None):
             if cancelled(job):
                 c.update(job['id'],state='cancelled',cancel=1);continue
             if job['mode']=='batch' and job['state']!='sending':
-                c.update(job['id'],state='running');process_batch(job);continue
+                process_batch(job);continue
             if job['state']=='sending':deliver(job);continue
             if job['mode']=='resolve':
+                if not _start_download(job):continue
                 status(job,'正在解析分享連結')
                 if c.get_setting(platform+'_cooldown',0)>time.time():
                     retry=c.get_setting(platform+'_cooldown');c.update(job['id'],state='cooldown',retry_at=retry)
                     status(job,'平台冷卻中，稍後自動續作');continue
-                url=c.resolve(job['url'])
-                provider,mode=c.classify(url)
-                if mode=='resolve':raise ValueError('不支援的分享連結')
+                url,provider,mode=_resolve_download(job['url'])
                 from . import preferences
                 mode,notice=preferences.route(provider,mode,url,json.loads(job.get('preferences') or '{}').get(provider,{}))
                 if job.get('group_chat_id') and mode=='choice':mode='post'
-                if '/share/' in urlsplit(job['url']).path and provider=='instagram':
+                if mode!='resolve' and '/share/' in urlsplit(job['url']).path and provider=='instagram':
                     notice=notice or '已將 Instagram 分享連結識別為'+('限時動態' if mode=='stories' else '貼文分享連結')+'，按可確認內容下載。'
                 preferences.record_notice(job['id'],notice)
                 c.update(job['id'],url=url,platform=provider,mode=mode,bridge_id=None,state='choice' if mode=='choice' else 'queued')
                 if mode=='choice':choice(c.job_by_id(job['id']))
                 continue
-            c.update(job['id'],state='running')
             done=download(job)
             if cancelled(job):c.update(job['id'],state='cancelled')
             elif done:deliver(job)

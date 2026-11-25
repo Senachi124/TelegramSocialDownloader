@@ -29,7 +29,9 @@ Each installation can poll the Fanclub using its operator's account and push new
 
 Sign in to the Bot web console. Open **Subscriptions → takaneko**, enter the Fanclub session and choose **Save Fanclub session**. You can supply a browser-exported JSON array containing the cookies valid for the Fanclub API, or a JSON object with an `accessToken`, `refreshToken` or `cookies` array. The credential broker stores the operator's session and handles refresh-token rotation. The web console does not display stored values.
 
-In **Users**, approve each Telegram user who should receive updates. In **Subscriptions**, choose **Subscribe** next to that user. The first complete poll establishes the starting inventory. Subsequent polls normally run every five minutes and enqueue newly discovered posts for current subscribers. Delivery rechecks both Bot access and the subscription. **Unsubscribe** cancels eligible outstanding deliveries and revokes the user's download links.
+In **Users & groups**, approve each Telegram user who should receive updates. In **Subscriptions**, choose **Subscribe** next to that user. Open **Features** and choose **Enable** beside **Takaneko Fanclub** to start polling and delivery. A new installation starts paused. You can leave it paused without adding a session. The first complete poll establishes the starting inventory. Subsequent polls normally run every five minutes and enqueue newly discovered posts for current subscribers. Delivery rechecks both Bot access and the subscription.
+
+Choose **Pause** in **Features** to suspend polling and delivery while keeping the Fanclub session, subscriptions and pending deliveries. Choose **Enable** to resume. To remove one recipient, choose **Unsubscribe** in **Subscriptions**. This cancels eligible outstanding deliveries and revokes the user's download links.
 
 The provider sends original text by default. To enable translation, import the full provider credential object using a private JSON file. An example schema is shown below. Use your own session and key. An import replaces the provider credentials, including the active Fanclub session and translation-key list.
 

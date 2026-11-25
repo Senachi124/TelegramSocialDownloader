@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import time
 
-from .. import command_reply, core as c
+from .. import command_reply, core as c, features
 from .image_cache import MAX_IMAGE_BYTES
 from ..video import VIDEO_DEMUXERS
 
@@ -153,8 +153,13 @@ def _head(db, scope, now, expected):
     db.execute('''INSERT INTO translation_albums(chat,topic,actor,album,outgoing,created,last_member,expected)
                   VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(chat,topic,actor,album,outgoing) DO NOTHING''',
                (*scope, now, now, expected))
-    return db.execute('''SELECT id FROM translation_albums
-                         WHERE chat=? AND topic=? AND actor=? AND album=? AND outgoing=?''', scope).fetchone()[0]
+    return db.execute('''SELECT id,incomplete FROM translation_albums
+                         WHERE chat=? AND topic=? AND actor=? AND album=? AND outgoing=?''', scope).fetchone()
+
+
+def _mark_incomplete(db, head):
+    db.execute('UPDATE translation_albums SET incomplete=1 WHERE id=?', (head,))
+    db.execute('DELETE FROM translation_album_members WHERE album_id=?', (head,))
 
 
 def _member(db, head, message):
@@ -172,16 +177,23 @@ def observe(db, message, now=None):
     if not scope:
         return
     now = time.time() if now is None else now
+    enabled = features.enabled('translation', db)
     db = _cache
     _bound_size()
-    head = _head(db, scope, now, 0)
+    head, incomplete = _head(db, scope, now, 0)
+    if incomplete:
+        return
+    if not enabled:
+        # Keep only the group identity. Later members cannot make this album complete.
+        _mark_incomplete(db, head)
+        return
     present, count = db.execute('''SELECT count(CASE WHEN message=? THEN 1 END),count(*)
                                    FROM translation_album_members WHERE album_id=?''',
                                 (message['message_id'], head)).fetchone()
     if present:
         return
     if count >= MAX_MEMBERS:
-        db.execute('UPDATE translation_albums SET incomplete=1 WHERE id=?', (head,))
+        _mark_incomplete(db, head)
         return
     _member(db, head, message)
     db.execute('UPDATE translation_albums SET last_member=? WHERE id=?', (now, head))
@@ -195,13 +207,15 @@ def invalidate(db, message, now=None):
         now = time.time() if now is None else now
         db = _cache
         _bound_size()
-        head = _head(db, scope, now, 0)
-        db.execute('UPDATE translation_albums SET incomplete=1 WHERE id=?', (head,))
+        head, _ = _head(db, scope, now, 0)
+        _mark_incomplete(db, head)
 
 
 @_bounded_cache
 def record_delivery(db, pairs, now=None):
     """Index one complete, acknowledged sendMediaGroup. Individual files prove routing only."""
+    if not features.enabled('translation', db):
+        return
     pairs = list(pairs)
     if not 1 <= len(pairs) <= MAX_MEMBERS:
         return
@@ -241,7 +255,7 @@ def record_delivery(db, pairs, now=None):
                    [(*scope[:3], message_id, now + TTL) for message_id in seen])
     if not group:
         return
-    head = _head(db, scope, now, len(pairs))
+    head, _ = _head(db, scope, now, len(pairs))
     for _, message in pairs:
         _member(db, head, message)
 
@@ -319,6 +333,8 @@ def resolve(message, bot_username):
     while True:
         with c.db() as db:
             db.execute('BEGIN')
+            if not features.enabled('translation', db):
+                return None
             scope = _human_scope(db, message)
             if not scope or (parent.get('is_topic_message') and _topic(parent) != scope[1]):
                 return None

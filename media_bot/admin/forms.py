@@ -4,6 +4,16 @@ from email.policy import default
 from urllib.parse import parse_qs
 
 
+class FormError(ValueError):
+    """A form error with a fixed user-facing message."""
+
+    status = 400
+
+
+class ServiceUnavailable(FormError):
+    status = 503
+
+
 def parse_form(content_type, raw, *, allow_upload=False):
     if not content_type.lower().startswith('multipart/form-data'):
         try:

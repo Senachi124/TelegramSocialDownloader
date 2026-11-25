@@ -3,12 +3,9 @@ import re
 import time
 
 from .. import access, accounts, core as c, pool_checks
+from .forms import FormError
 
 ACCOUNT_RESUME_MAX_AGE = 30 * 60
-
-
-class FormError(ValueError):
-    """A form error with a fixed user-facing message."""
 
 
 def resume_accounts(platform,account_id=''):
@@ -31,6 +28,9 @@ def resume_accounts(platform,account_id=''):
 
 def manage(route, form):
     """Apply an authenticated administrative change and return its redirect route."""
+    if route=='features':
+        from . import feature_controls
+        return feature_controls.update(form)
     if route=='settings':
         changes = {p+'_media_limit':int(form[p+'_media_limit']) for p in accounts.PLATFORMS}
         if not all(1<=v<=1000 for v in changes.values()):

@@ -12,7 +12,7 @@ _TEST_ROOT = Path(__file__).resolve().parents[1] / '.test-work'
 _TEST_ROOT.mkdir(exist_ok=True)
 _BOOTSTRAP = tempfile.TemporaryDirectory(prefix='import-', dir=_TEST_ROOT)
 with patch.dict(os.environ, {'MEDIA_BOT_DATA': _BOOTSTRAP.name}):
-    from media_bot import core as c, worker as w, inbox, config, access
+    from media_bot import core as c, worker as w, inbox, config, access, features, pool_checks
 
 
 class RuntimeTests(unittest.TestCase):
@@ -175,6 +175,120 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual([r['state'] for r in rows], ['pending', 'failed', 'pending'])
         self.assertEqual([r['original_url'] for r in rows], urls)
         self.assertEqual(rows[2]['mode'], 'post')
+
+    def test_download_switches_apply_to_new_private_and_group_requests(self):
+        urls = {'instagram': 'https://instagram.com/p/example/', 'tiktok': 'https://vt.tiktok.com/example/',
+                'twitter': 'https://x.com/example/status/123', 'threads': 'https://threads.net/@example/post/abcde',
+                'youtube': 'https://youtu.be/Abc123_X-yZ'}
+        for platform, url in urls.items():
+            with self.subTest(platform=platform):
+                self.assertTrue(features.download_enabled(platform))
+                features.set_enabled('download_' + platform, False)
+                w.handle_update(self.update(text=url))
+                self.assertIn(w.accounts.LABELS[platform], self.telegram.call_args.args[1]['text'])
+                self.assertIn('停用', self.telegram.call_args.args[1]['text'])
+                with c.db() as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM jobs').fetchone()[0], 0)
+                features.set_enabled('download_' + platform, True)
+
+        features.set_enabled('download_twitter', False)
+        features.set_enabled('download_tiktok', False)
+        message = '/download@fixture_bot ' + ' '.join(urls.values())
+        with patch.object(w, 'bot_username', return_value='fixture_bot'):
+            w.handle_update(self.update(chat=-42, actor=123, text=message, kind='supergroup'))
+        reply = self.telegram.call_args.args[1]
+        self.assertEqual(reply['chat_id'], -42)
+        self.assertEqual(reply['reply_parameters']['message_id'], 1)
+        self.assertIn('Twitter / X', reply['text'])
+        self.assertIn('TikTok', reply['text'])
+        with c.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM batch_items').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM jobs').fetchone()[0], 0)
+        self.assertEqual(self.job(urls['youtube'])['state'], 'queued')
+
+    def test_paused_batch_preserves_order_cooldown_and_sending_work(self):
+        x = 'https://x.com/example/status/123'
+        yt = 'https://youtu.be/Abc123_X-yZ'
+        batch = c.enqueue_batch('mixed', 123, [x, yt], 10)
+        cooldown = self.job(x, 'cooldown')
+        sending = self.job(x, 'sending')
+        receipt = self.file(sending, state='sent')
+        unrelated = self.job(yt, 'unrelated')
+        retry = time.time() + 600
+        c.update(cooldown['id'], state='cooldown', retry_at=retry, account_id='fixture')
+        c.update(sending['id'], state='sending')
+        features.set_enabled('download_twitter', False)
+        self.assertEqual(c.enqueue_batch('mixed', 123, [x, yt], 10), batch)
+        with patch.object(w, 'capture') as capture:
+            w.process_batch(c.job_by_id(batch))
+            self.assertFalse(w.download(cooldown))
+            capture.assert_not_called()
+            self.broker.assert_not_called()
+        with c.db() as db:
+            self.assertEqual(w._next_job(db, 'youtube', time.time())['id'], unrelated['id'])
+            self.assertEqual(w._next_job(db, 'twitter', time.time())['id'], sending['id'])
+            self.assertEqual([row[0] for row in db.execute(
+                'SELECT state FROM batch_items WHERE job=? ORDER BY position', (batch,))], ['pending', 'pending'])
+        w.deliver(c.job_by_id(sending['id']))
+        self.assertEqual(self.file_state(receipt), 'sent')
+        self.assertFalse(any(call.args[0] == 'sendPhoto' for call in self.telegram.call_args_list))
+        self.assertEqual(c.job_by_id(cooldown['id'])['retry_at'], retry)
+        self.assertEqual(c.job_by_id(cooldown['id'])['account_id'], 'fixture')
+        features.set_enabled('download_twitter', True)
+        with c.db() as db:
+            self.assertEqual(w._next_job(db, 'twitter', time.time())['id'], batch)
+
+    def test_choice_saved_while_paused_survives_unanswered_choice_expiry(self):
+        job = self.job('https://instagram.com/p/Example/')
+        unanswered = self.job('https://instagram.com/p/Other/', 'unanswered')
+        callback = {'update_id': 2, 'callback_query': {'id': 'fixture', 'from': {'id': 123},
+                    'message': {'chat': {'id': 123, 'type': 'private'}}, 'data': job['id'] + ':stories'}}
+        features.set_enabled('download_instagram', False)
+        w.handle_update(callback)
+        saved = c.job_by_id(job['id'])
+        self.assertEqual((saved['state'], saved['mode']), ('queued', 'stories'))
+        self.assertIn('等待 Instagram 下載重新啟用', saved['message'])
+        self.assertEqual(self.telegram.call_args_list[0].args[1]['text'], saved['message'])
+
+        future = unanswered['created'] + 86401
+        with patch('media_bot.retention.time.time', return_value=future):
+            c.cleanup()
+        self.assertIsNone(c.job_by_id(unanswered['id']))
+        with c.db() as db:
+            self.assertIsNone(w._next_job(db, 'instagram', future))
+        features.set_enabled('download_instagram', True)
+        callback['callback_query']['data'] = job['id'] + ':post'
+        w.handle_update(callback)
+        self.assertEqual(self.telegram.call_args.args[1]['text'], '此工作已處理')
+        with c.db() as db:
+            row = w._next_job(db, 'instagram', future)
+        self.assertEqual((row['id'], row['state'], row['mode']), (job['id'], 'queued', 'stories'))
+
+    def test_batch_handoff_and_finalization_survive_pausing_last_worker(self):
+        key = c.enqueue_batch('batch', 123, ['https://x.com/example/status/1', 'https://youtu.be/Abc123_X-yZ'], 10)
+        features.set_enabled('download_twitter', False)
+        with c.db() as db:
+            db.execute("UPDATE batch_items SET state='done' WHERE job=? AND position=0", (key,))
+            row = w._next_job(db, 'twitter', time.time())
+        w.process_batch(dict(row))
+        self.assertEqual(c.job_by_id(key)['platform'], 'youtube')
+        features.set_enabled('download_youtube', False)
+        with c.db() as db:
+            self.assertIsNone(w._next_job(db, 'youtube', time.time()))
+            db.execute("UPDATE batch_items SET state='done' WHERE job=?", (key,))
+            row = w._next_job(db, 'youtube', time.time())
+        w.process_batch(dict(row))
+        self.assertEqual(c.job_by_id(key)['state'], 'completed')
+
+    def test_paused_download_probes_and_share_hops_skip_network(self):
+        features.set_enabled('download_tiktok', False)
+        with self.assertRaisesRegex(ValueError, 'Enable downloads for this platform'):
+            pool_checks.start('tiktok', 'https://www.tiktok.com/@example/video/123')
+        self.assertEqual(pool_checks._run({'platform': 'tiktok'}), ('skipped', pool_checks.FORM_ERRORS['feature']))
+        url = 'https://vt.tiktok.com/example/'
+        with patch.object(c.socket, 'getaddrinfo') as dns:
+            self.assertEqual(w._resolve_download(url), (url, 'tiktok', 'resolve'))
+            dns.assert_not_called()
 
     def test_batch_rejects_more_than_fifty(self):
         with self.assertRaises(ValueError): c.enqueue_batch('too-many', 123, ['https://x.com/example/status/1'] * 51, 10)

@@ -14,6 +14,7 @@ class ProducerIntegrationTests(unittest.TestCase):
     def test_existing_sent_and_uncertain_work_never_sent_again(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(state,'CONTROL', Path(tmp)):
             state.initialize()
+            feed.set_enabled(True)
             feed.set_subscription(42,True)
             feed.record_inventory([{'id':'baseline'}])
             feed.record_inventory([{'id':'baseline'},{'id':'delivered'},{'id':'unknown'}])
@@ -37,6 +38,7 @@ class ProducerIntegrationTests(unittest.TestCase):
     def test_unavailable_recipients_do_not_starve_the_next_page(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(state, 'CONTROL', Path(tmp)):
             state.initialize()
+            feed.set_enabled(True)
             for user in range(1, 23):
                 feed.set_subscription(user, True)
             feed.record_inventory([])
@@ -89,6 +91,7 @@ class ProducerIntegrationTests(unittest.TestCase):
         import time
         with tempfile.TemporaryDirectory() as tmp, patch.object(state,'CONTROL', Path(tmp)), patch.object(state,'MEDIA',Path(tmp)):
             state.initialize()
+            feed.set_enabled(True)
             feed.set_subscription(8,True)
             feed.record_inventory([])
             feed.record_inventory([{'id':'story'}])
@@ -181,6 +184,7 @@ class ProducerIntegrationTests(unittest.TestCase):
         from takaneko_telegram import takaneko_api
         with tempfile.TemporaryDirectory() as tmp, patch.object(state,'CONTROL',Path(tmp)), patch.object(state,'MEDIA',Path(tmp)):
             state.initialize()
+            feed.set_enabled(True)
             self.assertIn('set_session',transport.control(100,{'op':'list'},None)['capabilities'])
             feed.set_subscription(101,True)
             feed.record_inventory([{'id':'previous'}])

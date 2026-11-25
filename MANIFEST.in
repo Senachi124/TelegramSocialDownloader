@@ -1,0 +1,2 @@
+include .env.example CHANGELOG.md INSTAGRAM-WEB-NOTICE.txt
+recursive-include docs *.md

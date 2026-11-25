@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-social-downloader"
+version = "1.0.0"
+description = "Telegram media downloads, subscription delivery and web administration"
+readme = "README.md"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[project.scripts]
+telegram-social-downloader = "media_bot.__main__:main"
+
+[tool.setuptools]
+license-files = ["INSTAGRAM-WEB-NOTICE.txt"]
+packages = ["media_bot"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}

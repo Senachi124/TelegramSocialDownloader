@@ -2,13 +2,13 @@
 
 ## Unreleased
 
-- Connect or switch Fanclub accounts with a single refresh token in **Takaneko subscriptions**. Use **Test connection** to verify the saved login, including while the provider is paused.
+## 1.2.0 — 2026-11-25
 
+- Connect or switch Fanclub accounts with a single refresh token in **Takaneko subscriptions**. Use **Test connection** to verify the saved login, including while the provider is paused.
 - Add a read-only Error log for failed, partial or paused downloads, Telegram push errors and provider health reports. Takaneko subscriptions now contains Fanclub login and recipient settings. Takaneko errors are logged without sending owner reminders.
 - Rename the subscription management page to **Takaneko subscriptions**.
 - Redesign the web console for desktop and mobile. Connection settings save independently, access and subscription rows show available actions, and credential edits return to the selected pool.
 - Allow operators to test a development build on a selected installation by manually deploying its verified CI artifact and commit SHA.
-
 - Add a Features page to the web console for individual download platforms, Telegram translation and OCR, and the optional Takaneko Fanclub service. Paused download platforms and Fanclub subscriptions retain pending work. New Fanclub installations start paused.
 - Fix browser sign-in and settings updates when the browser applies the console’s referrer policy to form submissions.
 - Organize platform adapters, worker processing, translation and web administration into focused modules. Existing service commands and platform import paths remain available.

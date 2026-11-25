@@ -2,10 +2,10 @@
 
 ## Unreleased
 
-- Add a copyable DevTools helper for preparing a Fanclub login and a **Test connection** button in Takaneko subscriptions.
+- Connect or switch Fanclub accounts with a single refresh token in **Takaneko subscriptions**. Use **Test connection** to verify the saved login, including while the provider is paused.
 
 - Add a read-only Error log for failed, partial or paused downloads, Telegram push errors and provider health reports. Takaneko subscriptions now contains Fanclub login and recipient settings. Takaneko errors are logged without sending owner reminders.
-- Rename the admin page to **Takaneko subscriptions** and explain which Fanclub login formats support automatic renewal.
+- Rename the subscription management page to **Takaneko subscriptions**.
 - Redesign the web console for desktop and mobile. Connection settings save independently, access and subscription rows show available actions, and credential edits return to the selected pool.
 - Allow operators to test a development build on a selected installation by manually deploying its verified CI artifact and commit SHA.
 

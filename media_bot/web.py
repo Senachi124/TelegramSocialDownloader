@@ -36,13 +36,11 @@ def session(token,at=None):
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def setup(self):super().setup();self.connection.settimeout(30)
-    def respond(self,status,body='',headers=(),mime='text/html; charset=utf-8', *, copy_script=False):
+    def respond(self,status,body='',headers=(),mime='text/html; charset=utf-8'):
         raw=body.encode() if isinstance(body,str) else body
         self.send_response(status);self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(raw)))
         self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','same-origin')
         policy = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
-        if copy_script:
-            policy += f"; script-src 'sha256-{fanclub_session.COPY_HASH}'"
         self.send_header('Content-Security-Policy', policy)
         self.send_header('X-Content-Type-Options','nosniff')
         for k,v in headers:self.send_header(k,v)
@@ -118,8 +116,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if route == 'subscriptions' and 'mb_fc_test' in cookies:
                 headers.append(self.cookie('mb_fc_test', '', 0))
             return self.respond(200,layout.page(layout.PAGES[route], body, signed_in=True,
-                                route=route, session_fields=hidden, notice=notice), headers,
-                                copy_script=route=='subscriptions')
+                                route=route, session_fields=hidden, notice=notice), headers)
         except (OSError,ValueError,KeyError,sqlite3.Error):
             return self.respond(503,'Service settings are temporarily unavailable.')
 
@@ -176,7 +173,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if route == 'account' and content_type.lower().startswith('multipart/form-data'):
                 # Only the YouTube editor accepts files. Keep its return link if decoding fails.
                 form = {'platform': 'youtube'}
-            form = parse_form(content_type, self.rfile.read(length), allow_upload=route=='account')
+            form = parse_form(content_type, self.rfile.read(length), allow_upload=route=='account',
+                              unique_fields=route=='subscriptions')
             if not csrf_matches(form.get('csrf'),signed_in['csrf']):
                 return self.respond(403,'Expired form')
             if route=='fanclub-test':
@@ -190,7 +188,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             target = manage(route, form)
             if target is None:
                 return self.respond(404,'Not found')
-            return self.redirect(c.BASE+target, [self.cookie('mb_update', route.split('/', 1)[0], 45)])
+            headers = [self.cookie('mb_update', route.split('/', 1)[0], 45)]
+            if route == 'subscriptions' and form.get('action') == 'set_session':
+                headers.append(self.cookie('mb_fc_test', '', 0))
+            return self.redirect(c.BASE+target, headers)
         except (ValueError,KeyError,OverflowError) as error:
             message = str(error) if isinstance(error,FormError) else 'Invalid form or credential settings.'
             status = error.status if isinstance(error,FormError) else 400

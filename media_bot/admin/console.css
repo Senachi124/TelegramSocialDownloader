@@ -48,7 +48,6 @@ input, select, textarea, button { font: inherit; max-width: 100%; border: 1px so
 input:not([type=hidden],[type=checkbox],[type=radio]), select, textarea { display: block; width: min(100%,34rem); margin-top: .3rem; padding: .55rem .65rem; min-height: 2.75rem; color: var(--ink); background: white }
 input[type=checkbox], input[type=radio] { accent-color: var(--teal); width: 1.15rem; height: 1.15rem; flex: none }
 textarea { resize: vertical }
-#fanclub-export-script { width: 100%; font-family: ui-monospace, monospace; font-size: .88rem; margin-bottom: .6rem }
 #fanclub-connection { margin-top: 1rem }
 #fanclub-connection button { margin-top: .4rem }
 .test-result[role=status] { color: #17533e; margin: .6rem 0; font-weight: 600 }

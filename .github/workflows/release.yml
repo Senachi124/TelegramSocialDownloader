@@ -43,7 +43,6 @@ jobs:
                   for source in package.rglob('*.py')
               }
               expected.add('media_bot/admin/console.css')
-              expected.add('media_bot/admin/fanclub_export.txt')
               missing = expected.difference(wheel.namelist())
               assert not missing, f'Modules missing from the wheel: {sorted(missing)}'
           PY

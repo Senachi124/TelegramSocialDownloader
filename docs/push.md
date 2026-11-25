@@ -39,7 +39,7 @@ The bundled Takaneko provider advertises optional control operations in the `cap
 
 | Capability | Console operation |
 | --- | --- |
-| `set_session` | Save a Fanclub session object or browser cookie array. The reply contains only the operation result. |
+| `set_session` | Replace the Fanclub login. The web console passes a session object containing the refresh token. The reply contains only the operation result. |
 | `test_session` | Check the saved Fanclub session against the authenticated notification count endpoint and return its connection status. |
 | `set_enabled` | Switch Takaneko polling and delivery on or off. |
 

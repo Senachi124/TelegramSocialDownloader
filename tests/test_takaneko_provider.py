@@ -5,9 +5,9 @@ from pathlib import Path
 
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from takaneko_telegram import state, takaneko_feed as feed, transport
+from takaneko_telegram import secrets, session_probe, state, takaneko_api as api, takaneko_feed as feed, transport
 
 
 class ProducerIntegrationTests(unittest.TestCase):
@@ -232,3 +232,90 @@ class ProducerIntegrationTests(unittest.TestCase):
                     usage.return_value.free=1
                     with self.assertRaises(RuntimeError):
                         state.storage_guard()
+
+
+class ProviderLoginReplacementTests(unittest.TestCase):
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(state, 'CONTROL', root))
+        self.enterContext(patch.object(secrets, 'ROOT', root))
+        self.enterContext(patch.object(secrets, 'FILE', root / 'credentials.json'))
+        self.enterContext(patch.object(transport, 'secret', side_effect=self.broker))
+        state.initialize()
+
+    @staticmethod
+    def broker(operation, fields=None):
+        result = secrets.request(12, {'op': operation, **(fields or {})}, None)
+        if not result['ok']:
+            raise RuntimeError('Broker rejected request')
+        return result
+
+    def save_refresh(self, token):
+        self.assertEqual(transport.control(11, {'op': 'set_session', 'session': {'refreshToken': token}}, None),
+                         {'ok': True})
+        self.assertEqual(self.broker('get_session')['session'], {'refreshToken': token})
+
+    def check_login(self, refresh):
+        reply = Mock(status=200)
+        reply.read.side_effect = [json.dumps({'accessToken': 'fixture-b-access', 'refreshToken': 'fixture-b-next'}).encode(),
+                                  b'{"count":0}']
+        with patch.object(api, '_public_connection') as endpoint:
+            endpoint.return_value.getresponse.return_value = reply
+            self.assertEqual(session_probe.check(), 'connected')
+        self.assertEqual(endpoint.call_count, 2)
+        calls = endpoint.return_value.request.call_args_list
+        self.assertEqual([c.args for c in calls], [('POST', '/auth/refresh'), ('GET', '/auth/notifications/count')])
+        self.assertEqual(json.loads(calls[0].kwargs['body']), {'refreshToken': refresh})
+        self.assertNotIn('Authorization', calls[0].kwargs['headers'])
+        self.assertEqual(calls[1].kwargs['headers']['Authorization'], 'Bearer fixture-b-access')
+        for call in calls:
+            self.assertNotIn('Cookie', call.kwargs['headers'])
+        self.assertEqual(self.broker('get_session')['session'],
+                         {'accessToken': 'fixture-b-access', 'refreshToken': 'fixture-b-next'})
+
+    def test_first_install_with_only_refresh_token_remains_paused(self):
+        self.assertEqual(self.broker('get_session')['session'], {})
+        self.save_refresh('first-refresh')
+        self.check_login('first-refresh')
+        self.assertFalse(feed.is_enabled())
+        with state.db() as db:
+            self.assertFalse(db.execute("SELECT 1 FROM settings WHERE key='takaneko_initialized'").fetchone())
+            self.assertFalse(db.execute('SELECT 1 FROM tk_deliveries').fetchone())
+
+    def test_switch_replaces_legacy_cookie_and_tokens_and_keeps_frozen_queue(self):
+        old_login = {'cookies': [{'name': 'session', 'domain': '.takanekofc.com', 'value': 'account-a-cookie',
+                                  'path': '/'}], 'accessToken': 'account-a-access', 'refreshToken': 'account-a-refresh'}
+        keys = [{'id': 'key-a', 'enabled': True, 'key': 'fixture-key'}]
+        secrets.save({'session': old_login, 'openai_keys': keys, 'primary_key': 'key-a'})
+        feed.set_enabled(True)
+        feed.set_subscription(42, True)
+        feed.record_inventory([{'id': 'baseline'}])
+        feed.record_inventory([{'id': 'baseline'}, {'id': 'in-progress'}])
+        with state.db() as db:
+            delivery = dict(db.execute('SELECT * FROM tk_deliveries').fetchone())
+            db.execute("UPDATE tk_posts SET plan='[]' WHERE id='in-progress'")
+            db.executemany("INSERT INTO tk_parts(delivery_id,position,payload) VALUES (?,?,?)",
+                           [(delivery['id'], p, '{"kind":"text","html":"fixture"}') for p in (0, 1)])
+        feed.deliver(delivery, Mock(side_effect=[{'message_id': 77}, TimeoutError()]))
+
+        def snapshot():
+            with state.db() as db:
+                return {table: [tuple(row) for row in db.execute(f'SELECT * FROM {table} ORDER BY rowid')]
+                        for table in ('settings', 'tk_subscriptions', 'tk_posts', 'tk_deliveries', 'tk_parts',
+                                      'tk_review_attempts')}
+
+        before = snapshot()
+        self.assertTrue(before['tk_review_attempts'])
+        self.assertTrue(state.get_setting('takaneko_initialized'))
+        with state.db() as db:
+            self.assertEqual([tuple(p) for p in db.execute('SELECT state,telegram_id FROM tk_parts ORDER BY position')],
+                             [('sent', '77'), ('uncertain', None)])
+
+        self.save_refresh('account-b-refresh')
+        late_rotation = Mock(session_snapshot={'accessToken': 'late-a-access', 'refreshToken': 'late-a-refresh'})
+        with self.assertRaises(RuntimeError):
+            feed.persist_session(late_rotation, old_login)
+        self.check_login('account-b-refresh')
+        self.assertEqual(snapshot(), before)
+        self.assertEqual(self.broker('get')['openai_keys'], keys)
+        self.assertEqual(json.loads(secrets.FILE.read_text())['primary_key'], 'key-a')

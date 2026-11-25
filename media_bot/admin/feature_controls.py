@@ -48,11 +48,11 @@ def _fanclub_row(hidden):
 
     detail = ''
     if session is False:
-        detail = f'<p><a href="{core.BASE}subscriptions">Add a Fanclub session in Takaneko subscriptions</a>.</p>'
+        detail = f'<p><a href="{core.BASE}subscriptions">Add a refresh token in Takaneko subscriptions</a>.</p>'
     elif session is None:
         detail = '<p>The Fanclub credential service is unavailable.</p>'
     if enabled:
-        state = 'Enabled · waiting for a Fanclub session' if session is False else 'Enabled'
+        state = 'Enabled · waiting for a Fanclub login' if session is False else 'Enabled'
         return _row(hidden, 'takaneko', label, state, False, detail)
     return _row(hidden, 'takaneko', label, 'Paused', True if session else None, detail)
 
@@ -91,7 +91,7 @@ def update(form):
         try:
             confirmed, _ = _fanclub_state(entry, 'set_enabled', enabled=enabled)
         except push.FanclubSessionRequired:
-            raise FormError('Add a Fanclub session in Takaneko subscriptions before enabling Takaneko.') from None
+            raise FormError('Add a refresh token in Takaneko subscriptions before enabling Takaneko.') from None
         except (OSError, ValueError):
             raise ServiceUnavailable('Could not confirm the Takaneko setting. Reload Features to check its status.') from None
         if confirmed != enabled:

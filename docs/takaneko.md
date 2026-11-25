@@ -27,22 +27,11 @@ Each installation can poll the Fanclub using its operator's account and push new
 
 ## Connect a Fanclub account
 
-Sign in to the bot web console and open **Takaneko subscriptions**. If you already have login JSON, paste it into **Fanclub login (JSON)** and choose **Save Fanclub session**.
+1. Sign in to your [Fanclub account](https://takanekofc.com/). In your browser’s developer tools, open **Application → Local Storage**, select the Fanclub origin and copy the value of `refreshToken`.
+2. Open **Takaneko subscriptions** in the bot web console, paste the value into **Refresh token** and choose **Save refresh token**. The provider uses it to obtain an access token and saves a replacement refresh token when the Fanclub issues one.
+3. Choose **Test connection** to check the saved login immediately. The test requests the Fanclub notification count and works even when polling and delivery are paused.
 
-To prepare the JSON from your signed-in Fanclub tab:
-
-1. Choose **Copy script** in the DevTools helper. Open the Console in your signed-in [official Fanclub tab](https://takanekofc.com/) and run the script. It opens an export dialog in that tab.
-2. For a refresh token, open **Application → Local Storage** in DevTools, select the Fanclub origin and copy the value of `refreshToken`. For cookies, open **Network**, select a request to `https://api.takanekofc.com/auth/refresh` and copy the login cookie as `name=value`. Separate multiple pairs with a semicolon.
-3. In the dialog choose **Refresh token** or **API cookies**, paste the selected value and choose **Copy login JSON**. The helper formats only the value you paste. Return to **Takaneko subscriptions**, paste the JSON and save it.
-4. Choose **Test connection** to check the saved login immediately. The provider makes an authenticated request for the notification count. This works with subscriptions paused and does not queue a delivery.
-
-| What you have | What to paste | How it works |
-| --- | --- | --- |
-| Refresh token | `{"refreshToken":"<your refresh token>"}` | The provider requests an access token and saves a replacement refresh token when the Fanclub issues one. This is the preferred option for ongoing subscriptions. |
-| Browser cookies | A browser-exported JSON cookie array, or `{"cookies":[…]}` with that array | Cookies alone work if the Fanclub accepts them at its API refresh endpoint. An export containing only preferences or analytics cookies cannot renew a login. |
-| Access token (JWT) only | `{"accessToken":"<your access token>"}` | The provider can use this token until it expires. You then need to import fresh login data. |
-
-If your refresh token is stored in browser local storage, a cookie export will omit it. Saving replaces the stored Fanclub login. The test reports whether the Fanclub accepts that login at the time of the check.
+To switch Fanclub accounts, save the new account’s refresh token in the same field. To check the new login before polling, pause **Takaneko Fanclub** in **Features** first. Saving replaces the previous Fanclub credentials and preserves Telegram subscriptions, pending deliveries and the existing article inventory. When polling resumes, articles visible for the first time can be sent to existing subscribers, including older posts exclusive to the new account.
 
 In **Users & groups**, approve each Telegram user who should receive updates. In **Takaneko subscriptions**, choose **Subscribe** next to that user. Open **Features** and choose **Enable** beside **Takaneko Fanclub** to start polling and delivery. A new installation starts paused. You can leave it paused without adding a session. The first complete poll establishes the starting inventory. Subsequent polls normally run every five minutes and enqueue newly discovered posts for current subscribers. Delivery rechecks both Bot access and the subscription.
 

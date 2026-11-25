@@ -41,7 +41,7 @@ def control(entry, operation, **fields):
     reply = push_socket.exchange(entry['control'], entry['uid'], {'op': operation, **fields})
     if reply.get('ok') is not True:
         if operation == 'set_enabled' and reply.get('error') == 'session_required':
-            raise FanclubSessionRequired('Save a Fanclub session before enabling notifications.')
+            raise FanclubSessionRequired('Save a Fanclub refresh token before enabling notifications.')
         raise ValueError('Subscription service unavailable')
     return reply
 
@@ -234,12 +234,8 @@ def web_post(form):
     if form.get('action') == 'set_session':
         if entry is None or form.get('provider') != 'takaneko':
             raise ValueError('Unknown session provider')
-        session = json.loads(form.get('session', ''))
-        if isinstance(session, list):
-            session = {'cookies': session}
-        if not isinstance(session, dict) or not session:
-            raise ValueError('Supply a Fanclub session or cookie array')
-        control(entry, 'set_session', session=session)
+        from .admin import fanclub_session
+        fanclub_session.save_refresh_token(entry, form)
         return
     if form.get('action'):
         raise ValueError('Unknown subscription action')

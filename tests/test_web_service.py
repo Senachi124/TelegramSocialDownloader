@@ -1,7 +1,5 @@
 import http.client
 import http.server
-import base64
-import hashlib
 import json
 import os
 import re
@@ -78,26 +76,32 @@ class WebServiceTests(unittest.TestCase):
         self.assertEqual(status,200)
         return cookie,re.search('name="csrf" value="([^"]+)"',body)[1]
 
-    def test_provider_session_import_requires_admin_and_csrf(self):
+    def test_provider_refresh_token_save_requires_admin_and_csrf(self):
         from media_bot import push
         entry = {'control': '/run/test-provider.sock', 'uid': 2000}
         self.enterContext(patch.object(push, 'providers', return_value={'takaneko': entry}))
         provider = self.enterContext(patch.object(push, 'control', return_value={
             'ok': True, 'users': [], 'capabilities': ['set_session']
         }))
-        form = {'provider': 'takaneko', 'action': 'set_session', 'session': '{"accessToken":"sample-secret"}'}
+        raw_token = "sample-secret+/.%&=~_Ac:10=="
+        form = {'provider': 'takaneko', 'action': 'set_session', 'refresh_token': raw_token}
         self.assertEqual(self.request('subscriptions', form=form)[0], 401)
         cookie, csrf = self.login()
         self.assertEqual(self.request('subscriptions', form=form, cookie=cookie)[0], 403)
+        self.assertEqual(self.request('subscriptions', form=dict(form, csrf=csrf),
+                                      cookie=cookie, origin='https://other.example')[0], 403)
         provider.assert_not_called()
-        self.assertEqual(self.request('subscriptions', form=dict(form, csrf=csrf), cookie=cookie)[0], 303)
-        provider.assert_called_once_with(entry, 'set_session', session={'accessToken': 'sample-secret'})
+        status, _, headers = self.request('subscriptions', form=dict(form, csrf=csrf), cookie=cookie + '; mb_fc_test=previous')
+        self.assertEqual(status, 303)
+        self.assertTrue(any(value.startswith('mb_fc_test=;') and 'Max-Age=0' in value
+                            for value in headers.get_all('Set-Cookie')))
+        provider.assert_called_once_with(entry, 'set_session', session={'refreshToken': raw_token})
         status, body, _ = self.request('subscriptions', cookie=cookie)
         self.assertEqual(status, 200)
         self.assertIn('<h1>Takaneko subscriptions</h1>', body)
         self.assertIn('aria-current="page">Takaneko subscriptions</a>', body)
         self.assertIn('aria-describedby="fanclub-login-help"', body)
-        self.assertIn('Save Fanclub session', body)
+        self.assertIn('Save refresh token', body)
         self.assertNotIn('sample-secret', body)
 
     def test_subscriptions_render_only_management_and_ignore_legacy_review(self):
@@ -110,7 +114,7 @@ class WebServiceTests(unittest.TestCase):
         provider = self.enterContext(patch.object(push, 'control', return_value=listing))
         status, page, _ = self.request('subscriptions?review_after=14', cookie=cookie + '; mb_update=delivery-review')
         self.assertEqual(status, 200)
-        self.assertIn('Save Fanclub session', page)
+        self.assertIn('Save refresh token', page)
         self.assertIn('Unsubscribe', page)
         self.assertIn('href="/bot/errors">Error log</a>', page)
         for text in ('Delivery review', 'delivery-review', 'Delivery decision', 'manual confirmation', 'Save decision'):
@@ -123,29 +127,36 @@ class WebServiceTests(unittest.TestCase):
         self.assertEqual(self.request('delivery-review', cookie=cookie)[0], 404)
         provider.assert_not_called()
 
-    def test_fanclub_export_is_copyable_text_with_scoped_script_policy(self):
-        from html import unescape
-        from importlib.resources import files
+    def test_refresh_token_form_is_script_free_and_rejects_stale_or_invalid_values(self):
         from media_bot import push
 
-        cookie, _ = self.login()
+        cookie, csrf = self.login()
         self.enterContext(patch.object(push, 'providers', return_value={'takaneko': {}}))
         provider = self.enterContext(patch.object(push, 'control', return_value={
             'users': [], 'capabilities': ['set_session']}))
         status, page, headers = self.request('subscriptions', cookie=cookie)
         self.assertEqual(status, 200)
-        text = re.search(r'<textarea id="fanclub-export-script"[^>]*readonly[^>]*>(.*?)</textarea>', page, re.S)
-        self.assertEqual(unescape(text[1]), files('media_bot.admin').joinpath('fanclub_export.txt').read_text().rstrip())
-        self.assertIn('id="copy-fanclub-script" type="button"', page)
-        self.assertNotIn('>Test connection<', page)
-        helper, = re.findall('<script>(.*?)</script>', page, re.S)
-        digest = base64.b64encode(hashlib.sha256(helper.encode()).digest()).decode()
-        csp = headers['Content-Security-Policy']
-        self.assertEqual(next(part.strip() for part in csp.split(';') if 'script-src' in part),
-                         f"script-src 'sha256-{digest}'")
-        self.assertNotIn('script-src', self.request('users', cookie=cookie)[2]['Content-Security-Policy'])
-        self.assertNotIn('script-src', self.request('subscriptions')[2]['Content-Security-Policy'])
+        self.assertIn('Refresh token<input type="password" name="refresh_token" value=""', page)
+        self.assertIn('Application → Local Storage', page)
+        for text in ('<script', 'Copy script', 'JSON', 'cookie array', 'name="session"', '>Test connection<'):
+            self.assertNotIn(text, page)
+        self.assertIn("default-src 'none'", headers['Content-Security-Policy'])
+        self.assertNotIn('script-src', headers['Content-Security-Policy'])
         provider.assert_called_once_with({}, 'list')
+        provider.reset_mock()
+        base = {'provider': 'takaneko', 'action': 'set_session', 'csrf': csrf}
+        for fields in ({}, {'session': '{"refreshToken":"sample-secret"}'},
+                       {'refresh_token': 'sample-secret', 'session': 'old-value'},
+                       *({'refresh_token': bad} for bad in ('', '  ', 'token\n', 'token\t', 'token\x7f',
+                          'a' * 16385, '{"refreshToken":"sample-secret"}', '["sample-secret"]', '"sample-secret"',
+                          'refreshToken=sample-secret', 'refreshToken:sample-secret', 'Cookie:sample-secret'))):
+            status, page, _ = self.request('subscriptions', cookie=cookie, form={**base, **fields})
+            self.assertEqual(status, 400)
+            self.assertIn('Paste the refreshToken value', page)
+            self.assertNotIn('sample-secret', page)
+        duplicate = [*base.items(), ('refresh_token', 'sample-secret'), ('refresh_token', 'other-value')]
+        self.assertEqual(self.request('subscriptions', cookie=cookie, form=duplicate)[0], 400)
+        provider.assert_not_called()
 
     def test_fanclub_connection_checks_only_saved_session_and_reports_fixed_result(self):
         from media_bot import push
@@ -159,7 +170,7 @@ class WebServiceTests(unittest.TestCase):
         self.assertEqual(self.request('fanclub-test', cookie=cookie)[0], 404)
         self.assertEqual(self.request('fanclub-test', cookie=cookie, form={'csrf': 'bad'})[0], 403)
         self.assertEqual(self.request('fanclub-test', cookie=cookie, origin='https://other.example', form=form)[0], 403)
-        status, page, _ = self.request('fanclub-test', cookie=cookie, form=dict(form, session='unsaved-secret'))
+        status, page, _ = self.request('fanclub-test', cookie=cookie, form=dict(form, refresh_token='unsaved-secret'))
         self.assertEqual(status, 400)
         self.assertNotIn('unsaved-secret', page)
         self.assertIn('href="/bot/subscriptions#fanclub-connection"', page)
@@ -168,7 +179,7 @@ class WebServiceTests(unittest.TestCase):
         listing = {'ok': True, 'users': [], 'capabilities': ['set_session', 'test_session']}
         for reply, message, role in [
                 ({'ok': True, 'result': 'connected'}, 'Connected. The saved login', 'status'),
-                ({'ok': True, 'result': 'no_session'}, 'Save a Fanclub login', 'alert'),
+                ({'ok': True, 'result': 'no_session'}, 'Save a refresh token', 'alert'),
                 ({'ok': True, 'result': 'unauthorized'}, 'Fanclub rejected', 'alert'),
                 ({'ok': True, 'result': 'forbidden'}, 'Fanclub denied', 'alert'),
                 ({'ok': True, 'result': 'changed'}, 'The saved login changed', 'alert'),
@@ -185,7 +196,7 @@ class WebServiceTests(unittest.TestCase):
             self.assertEqual(status, 200)
             section = page.split('id="fanclub-connection"', 1)[1].split('</div>', 1)[0]
             self.assertIn('action="/bot/fanclub-test"', section)
-            self.assertNotIn('name="session"', section)
+            self.assertNotIn('name="refresh_token"', section)
             self.assertIn(f'role="{role}">{message}', section)
             self.assertNotIn('provider-raw-secret', page)
             self.assertIn('Max-Age=0', headers['Set-Cookie'])
@@ -352,7 +363,7 @@ class WebServiceTests(unittest.TestCase):
         control.return_value = {'ok': True, 'enabled': False, 'session_configured': False}
         status, body, _ = self.request('features', cookie=cookie)
         self.assertEqual(status, 200)
-        self.assertIn('Add a Fanclub session in Takaneko subscriptions', body)
+        self.assertIn('Add a refresh token in Takaneko subscriptions', body)
         self.assertNotIn('aria-label="Enable Takaneko Fanclub"', body)
         control.assert_called_once_with(entry, 'feature_status')
         control.return_value['session_configured'] = True

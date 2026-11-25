@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.3 — 2026-11-25
+
+- Remove Telegram deployment announcements and retire outstanding announcement approvals.
+
 - Select the latest published release in the installation guide.
 
 ## 1.0.2 — 2026-11-25

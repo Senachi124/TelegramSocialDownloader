@@ -1,6 +1,0 @@
-{
-  "version": "1.0.2",
-  "changes": [
-    "修正管理員在 GitHub Actions 查看正式站部署結果的功能。"
-  ]
-}

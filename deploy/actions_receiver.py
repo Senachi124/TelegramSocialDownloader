@@ -80,10 +80,6 @@ def deploy(config, host, request, api):
         wheel.write_bytes(raw)
         subprocess.run([sys.executable,TOOLS/'upgrade.py','--config',CONTROL/'config.json',
                         '--wheel',wheel,'--tag',tag,'--sha',sha],check=True)
-    if host.get('preview_user'):
-        subprocess.run(['runuser','-u',host['preview_user'],'--','env','MEDIA_BOT_DATA='+config['data'],
-                        str(Path(config['current'])/'.venv/bin/python'),'-IB',TOOLS/'preview.py',
-                        tag,'--apply','--wait','90'],check=True)
 
 
 def main():
@@ -93,7 +89,7 @@ def main():
         return json.loads(fetch('https://api.github.com/repos/'+host['repository']+'/'+path,4*1024*1024))
     receipt=STATE/'status.json'
     prior=json.loads(receipt.read_text()) if receipt.exists() else {}
-    # Recheck interrupted operations by their original ID. The installer and preview are idempotent.
+    # Recheck interrupted operations by their original ID. Installing the same release is idempotent.
     previous=prior.get('deployment',0) - int(prior.get('state')=='running')
     item=select(api('deployments?environment=telegram-app&task=telegram-upgrade&per_page=10'),
                 previous,max(host['enabled_at'],datetime.now(timezone.utc).timestamp()-25*60))

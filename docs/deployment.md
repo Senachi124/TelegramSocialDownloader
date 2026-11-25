@@ -65,6 +65,8 @@ sudo python3 deploy/enable_actions.py \
   --config /etc/telegram-social-deploy/config.json
 ```
 
+If your v1.0.1 or v1.0.2 controller was installed with `--preview-user`, run the connection helper above from v1.0.3 or newer before updating the application. This replaces the old controller and removes its release announcement helper.
+
 On GitHub, configure the repository that will deploy your installation.
 
 1. In a fork, open **Actions** and enable workflows. Put the release and deployment workflows on the default branch before creating the first version tag.

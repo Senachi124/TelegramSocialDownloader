@@ -1,8 +1,5 @@
 """Owner alerts with a durable, content-free send checkpoint."""
-import hashlib
-import json
 import logging
-import re
 import shutil
 import threading
 import time
@@ -70,11 +67,6 @@ def initialize():
         CREATE INDEX IF NOT EXISTS admin_alert_due ON admin_alert_queue(state,next_attempt,id);
         CREATE TABLE IF NOT EXISTS admin_alert_health(
           name TEXT PRIMARY KEY, bad INTEGER NOT NULL, since REAL NOT NULL, alerted INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS release_preview_outbox(
-          id INTEGER PRIMARY KEY,event_key TEXT UNIQUE NOT NULL CHECK(event_key GLOB 'release-preview:*'),
-          payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',created REAL NOT NULL,
-          next_attempt REAL NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,
-          message_id TEXT,error TEXT NOT NULL DEFAULT '',finished REAL);
         DROP TRIGGER IF EXISTS admin_notice_new_job;
         DROP TRIGGER IF EXISTS admin_notice_job_state;
         DROP TRIGGER IF EXISTS admin_notice_new_user;
@@ -95,11 +87,22 @@ def initialize():
     with c.db() as db:
         db.executescript(db_statements)
         old = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        # Retain previous delivery checkpoints separately from live queues and authorizations.
+        if 'release_preview_outbox' in old or 'admin_notification_outbox' in old:
+            db.execute("""CREATE TABLE IF NOT EXISTS retired_release_receipts(
+                       event_key TEXT PRIMARY KEY, state TEXT, message_id TEXT)""")
+            for table in ('release_preview_outbox', 'admin_notification_outbox'):
+                if table in old:
+                    db.execute(f"""INSERT OR IGNORE INTO retired_release_receipts
+                               SELECT event_key,state,message_id FROM {table}
+                               WHERE event_key GLOB 'release-preview:*' AND state!='pending'""")
+            db.execute('DROP TABLE IF EXISTS release_preview_outbox')
+        if db.execute("SELECT 1 FROM settings WHERE key GLOB 'release_announcement:*' LIMIT 1").fetchone():
+            db.execute('CREATE TABLE IF NOT EXISTS retired_release_announcements(key TEXT PRIMARY KEY,value TEXT)')
+            db.execute("""INSERT OR IGNORE INTO retired_release_announcements
+                       SELECT key,value FROM settings WHERE key GLOB 'release_announcement:*'""")
+            db.execute("DELETE FROM settings WHERE key GLOB 'release_announcement:*'")
         if 'admin_notification_outbox' in old:
-            db.execute("""INSERT OR IGNORE INTO release_preview_outbox(
-              event_key,payload,state,created,next_attempt,attempts,message_id,error,finished)
-              SELECT event_key,payload,state,created,next_attempt,attempts,message_id,error,finished
-              FROM admin_notification_outbox WHERE event_key GLOB 'release-preview:*'""")
             db.execute("""INSERT INTO admin_alert_queue(reason,state,attempts,next_attempt)
                        SELECT 'previous',state,attempts,next_attempt FROM admin_notification_outbox
                        WHERE event_key NOT GLOB 'release-preview:*' AND state IN ('pending','uncertain')""")
@@ -124,58 +127,8 @@ def _check_health(db, name, bad, now):
         db.execute('UPDATE admin_alert_health SET alerted=1 WHERE name=?',(name,))
 
 
-def _send_preview(send, now):
-    with c.db() as db:
-        db.execute('BEGIN IMMEDIATE')
-        row = db.execute("""SELECT * FROM release_preview_outbox WHERE state='pending'
-                           AND next_attempt<=? ORDER BY id LIMIT 1""",(now,)).fetchone()
-        if not row:
-            return False
-        try:
-            key = row['event_key']
-            _, version, digest = key.split(':')
-            if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',version):
-                raise ValueError
-            approval = db.execute('SELECT value FROM settings WHERE key=?',
-                                  (f'release_announcement:{version}:{digest}',)).fetchone()
-            record = json.loads(approval[0])
-            recipient = db.execute("SELECT id FROM bot_users WHERE state='owner'").fetchone()[0]
-            text = json.loads(row['payload'])['text']
-            if (record['owner_id'] != recipient or record['text'] != text or record['preview_event'] != key or
-                record['sha256'] != digest or hashlib.sha256(text.encode()).hexdigest() != digest):
-                raise ValueError
-        except (ValueError,KeyError,IndexError,AttributeError,TypeError):
-            db.execute("""UPDATE release_preview_outbox SET state='blocked',error='invalid_preview',
-                       finished=? WHERE id=?""",(now,row['id']))
-            return True
-        db.execute("""UPDATE release_preview_outbox SET attempts=attempts+1,state='uncertain',
-                   error='awaiting_receipt' WHERE id=?""",(row['id'],))
-    try:
-        response = send('sendMessage',{'chat_id':recipient,'text':text,'disable_web_page_preview':True})
-        receipt = response.get('message_id') if isinstance(response,dict) else None
-        if type(receipt) is not int or receipt<=0:
-            raise ValueError
-        state, receipt, error, retry = 'sent', str(receipt), '', 0
-    except Exception as exc:
-        code = getattr(exc,'code',None)
-        receipt = None
-        if code in (401,409,429) and row['attempts'] < 7:
-            delay = max(float(getattr(exc,'retry',0) or 0), min(3600,30 * 2**row['attempts']))
-            state, error, retry = 'pending', f'telegram_rejected_{code}', now+delay
-        elif type(code) is int and 400<=code<500:
-            state, error, retry = 'blocked', f'telegram_rejected_{code}', 0
-        else:
-            state, error, retry = 'uncertain', 'delivery_result_unknown', 0
-    c.retry_write(lambda db: db.execute("""UPDATE release_preview_outbox SET state=?,error=?,
-                 message_id=?,next_attempt=?,finished=? WHERE id=?""",
-                 (state,error,receipt,retry,None if state=='pending' else now,row['id'])))
-    return True
-
-
 def tick(send, now=None):
     now = time.time() if now is None else now
-    if _send_preview(send, now):
-        return
     enabled = c.get_setting('enabled', False)
     last_poll = c.get_setting('telegram_last_poll', None)
     try:

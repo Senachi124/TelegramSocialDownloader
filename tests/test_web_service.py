@@ -158,36 +158,35 @@ class WebServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             pool_checks.start('instagram','')
 
-    def test_release_preview_migration_and_uncertain_receipt(self):
-        import hashlib
+    def test_upgrade_retires_announcements_and_keeps_operational_alerts(self):
         from media_bot import admin_notifications as alerts
-        text = 'v1.0.0 release preview'
-        digest = hashlib.sha256(text.encode()).hexdigest()
-        suffix = '1.0.0:'+digest
-        event = 'release-preview:'+suffix
-        self.c.setting('release_announcement:'+suffix,dict(text=text,sha256=digest,owner_id=90001,preview_event=event))
+        key = 'release_announcement:1.0.2:test'
+        self.c.setting(key, {'broadcast_authorized': True})
         with self.c.db() as db:
-            db.execute("""CREATE TABLE admin_notification_outbox(
-                     event_key TEXT PRIMARY KEY,payload TEXT,state TEXT,created REAL,next_attempt REAL,
-                     attempts INTEGER,message_id TEXT,error TEXT,finished REAL)""")
-            db.executemany('INSERT INTO admin_notification_outbox VALUES (?,?,?,?,?,?,?,?,?)',[
-                (event,json.dumps({'text':text}),'pending',1,0,0,None,'',None),
-                ('job:1','sensitive-test-data','sent',1,0,1,'1','',1)])
+            db.execute('CREATE TABLE release_preview_outbox(event_key TEXT, state TEXT, message_id TEXT)')
+            db.executemany('INSERT INTO release_preview_outbox VALUES (?,?,?)', [
+                ('release-preview:sent', 'sent', '123'),
+                ('release-preview:waiting', 'pending', None),
+                ('release-preview:unknown', 'uncertain', None)])
+            db.execute("""CREATE TABLE admin_notification_outbox(event_key TEXT, state TEXT,
+                       message_id TEXT, attempts INTEGER, next_attempt REAL)""")
+            db.executemany('INSERT INTO admin_notification_outbox VALUES (?,?,?,?,?)', [
+                ('release-preview:legacy', 'pending', None, 0, 0),
+                ('job:legacy', 'pending', None, 1, 0)])
         alerts.initialize()
         alerts.initialize()
-        def fail(_,message):
-            self.assertEqual(message['text'],text)
-            self.assertEqual(message['chat_id'],90001)
-            with self.c.db() as db:
-                self.assertEqual(db.execute('SELECT state FROM release_preview_outbox').fetchone()[0],'uncertain')
-            raise TimeoutError
-        alerts.tick(fail)
         with self.c.db() as db:
-            row=db.execute('SELECT * FROM release_preview_outbox').fetchone()
-            self.assertEqual(row['attempts'],1)
-            self.assertEqual(row['state'],'uncertain')
-            self.assertEqual(db.execute('SELECT count(*) FROM admin_alert_queue').fetchone()[0],0)
-        alerts.tick(lambda *_:self.fail('An ambiguous preview was sent twice'))
+            self.assertIsNone(db.execute("SELECT 1 FROM settings WHERE key=?", (key,)).fetchone())
+            self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='release_preview_outbox'").fetchone())
+            receipts = db.execute('SELECT state,message_id FROM retired_release_receipts ORDER BY state')
+            self.assertEqual([tuple(row) for row in receipts], [('sent', '123'), ('uncertain', None)])
+        sent = []
+        def send(method, message):
+            sent.append(message['text'])
+            return {'message_id': 1}
+        alerts.tick(send)
+        alerts.tick(send)
+        self.assertEqual(sent, [alerts.MESSAGES['previous']])
 
     def test_each_account_pool_and_key_rotation(self):
         cookie,csrf = self.login()

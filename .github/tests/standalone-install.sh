@@ -25,7 +25,7 @@ sudo mount -o loop "$image" /srv/fanclub-storage
 sudo udevadm settle
 sudo python3 deploy/install_takaneko.py --storage /srv/fanclub-storage --link-base https://telegram.example.org/takaneko-download/
 python=/opt/telegram-social-downloader/current/.venv/bin/python
-sudo -u telegram-social -g telegram-push "$python" -I - <<'PY'
+sudo runuser -u telegram-social -g telegram-push -- "$python" -I - <<'PY'
 import pwd
 import time
 from media_bot.push_socket import exchange

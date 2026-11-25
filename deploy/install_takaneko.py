@@ -178,12 +178,14 @@ def install(storage, url, cfg):
                 candidate.replace(controller)
             finally:
                 candidate.unlink(missing_ok=True)
+    # Register before starting daemons so even an interrupted activation is covered
+    # by the next deployment's health checks and drain lock.
+    cfg.update(registration)
+    upgrade.atomic_json(Path(upgrade.CONFIG), cfg)
     run('systemctl', 'enable', '--now', push, PROVIDER_UNITS['takaneko_broker'],
         PROVIDER_UNITS['takaneko_links'], PROVIDER_UNITS['takaneko_worker'])
     run('systemctl','restart',cfg['web'])
-    cfg.update(registration)
     upgrade.check(cfg)
-    upgrade.atomic_json(Path(upgrade.CONFIG), cfg)
 
 
 def main():

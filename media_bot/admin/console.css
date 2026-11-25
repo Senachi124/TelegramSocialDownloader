@@ -45,8 +45,8 @@ dd { font-weight: 650; margin-top: .15rem }
 label { display: block; margin: .8rem 0; font-weight: 550 }
 .check { display: flex; align-items: center; gap: .65rem; min-height: 2.75rem; margin: .2rem 0 }
 input, select, textarea, button { font: inherit; max-width: 100%; border: 1px solid #899fa7; border-radius: .38rem }
-input:not([type=hidden],[type=checkbox]), select, textarea { display: block; width: min(100%,34rem); margin-top: .3rem; padding: .55rem .65rem; min-height: 2.75rem; color: var(--ink); background: white }
-input[type=checkbox] { accent-color: var(--teal); width: 1.15rem; height: 1.15rem; flex: none }
+input:not([type=hidden],[type=checkbox],[type=radio]), select, textarea { display: block; width: min(100%,34rem); margin-top: .3rem; padding: .55rem .65rem; min-height: 2.75rem; color: var(--ink); background: white }
+input[type=checkbox], input[type=radio] { accent-color: var(--teal); width: 1.15rem; height: 1.15rem; flex: none }
 textarea { resize: vertical }
 button { background: var(--teal); color: white; border-color: var(--teal); font-weight: 600; min-height: 2.75rem; padding: .48rem .9rem; cursor: pointer }
 button:hover { filter: brightness(.94) }
@@ -61,6 +61,8 @@ main:has(.notice) :is(:target, button, input, summary, a) { scroll-margin-top: 4
 [role=alert] { background: #ffede8; color: #812a24 }
 .callout { background: #fff2d8; color: #593f0c }
 details { padding: .55rem 0 }
+.review-delivery + .review-delivery { border-top: 1px solid var(--line) }
+.review-delivery label { display: flex; align-items: center; gap: .65rem; min-height: 2.75rem; margin: .2rem 0 }
 summary { cursor: pointer; font-weight: 650; color: var(--teal); padding: .6rem .2rem; min-height: 2.75rem }
 summary .muted { font-size: .93rem; font-weight: 450; margin-left: .5rem }
 details[open] > summary { margin-bottom: .35rem }

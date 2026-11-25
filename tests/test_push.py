@@ -26,6 +26,19 @@ class PushTests(unittest.TestCase):
         with patch.object(push.access,'allowed',return_value=True), patch.object(push.core,'get_setting',return_value=True), patch.object(push,'control',return_value={'enabled':False}):
             self.assertEqual(push.dispatch({}, {'op':'send','user_id':1,'kind':'text','text':'Hi'},None)['code'],403)
 
+    def test_review_authorization_reads_only_bot_access_for_takaneko(self):
+        review = {'op': 'review_allowed', 'user_id': 123}
+        with patch.object(push, 'control') as provider, patch.object(push.access, 'allowed') as allowed:
+            for slug, fd, req in [('feed', None, review), (None, None, review), ('takaneko', 5, review),
+                                  ('takaneko', None, dict(review, extra='field'))]:
+                self.assertEqual(push.dispatch({}, req, fd, slug=slug), {'ok': False, 'code': 403})
+            allowed.assert_not_called()
+            for permitted, reply in [(True, {'ok': True}), (False, {'ok': False, 'code': 403})]:
+                allowed.return_value = permitted
+                self.assertEqual(push.dispatch({}, review, None, slug='takaneko'), reply)
+                allowed.assert_called_with(123)
+            provider.assert_not_called()
+
     def test_delivery_returns_only_message_id(self):
         received=[]
         def send(method,data):

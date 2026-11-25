@@ -14,10 +14,13 @@ class ServiceUnavailable(FormError):
     status = 503
 
 
-def parse_form(content_type, raw, *, allow_upload=False):
+def parse_form(content_type, raw, *, allow_upload=False, unique_fields=False):
     if not content_type.lower().startswith('multipart/form-data'):
         try:
-            return {name: values[-1] for name, values in parse_qs(raw.decode('utf-8')).items()}
+            fields = parse_qs(raw.decode('utf-8'), keep_blank_values=unique_fields)
+            if unique_fields and any(len(values) != 1 for values in fields.values()):
+                raise FormError('Supply one value for each field.')
+            return {name: values[-1] for name, values in fields.items()}
         except UnicodeError:
             raise FormError('Supply a UTF-8 encoded form.') from None
     if not allow_upload:

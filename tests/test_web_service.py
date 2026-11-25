@@ -98,6 +98,119 @@ class WebServiceTests(unittest.TestCase):
         self.assertIn('Save Fanclub session', body)
         self.assertNotIn('sample-secret', body)
 
+    def test_delivery_review_lists_only_live_eligible_parts_and_pages(self):
+        from media_bot import push
+
+        cookie, _ = self.login()
+        with self.c.db() as db:
+            db.execute("UPDATE bot_users SET name='Ada <fixture>' WHERE id=90001")
+        self.c.setting('push_health.takaneko', 'uncertain')
+        self.enterContext(patch.object(push, 'providers', return_value={'takaneko': {}}))
+        example = dict(delivery_id=12, user_id=90001, created=1704067200, position=1, total=3,
+                       kind='photo', attempt='a' * 32, post_id='private-post-id', url='private-media-url')
+        listing = dict(users=[90001], capabilities=['review_deliveries', 'set_session'])
+        calls = []
+
+        def read_only(entry, operation, **fields):
+            calls.append((operation, fields))
+            if operation == 'list':
+                return listing
+            self.assertEqual(operation, 'review_deliveries')
+            if fields['after'] == 0:
+                return dict(items=[example, dict(example, delivery_id=13, user_id=90002)], next_after=13)
+            self.assertEqual(fields['after'], 13)
+            return dict(items=[], next_after=None)
+
+        self.enterContext(patch.object(push, 'control', side_effect=read_only))
+        self.assertEqual(self.request('subscriptions')[0], 303)
+        self.assertEqual(calls, [])
+        status, page, _ = self.request('subscriptions', cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('<summary>Delivery #12 · part 2 of 3 (photo) · Ada &lt;fixture&gt;</summary>', page)
+        self.assertIn('Queued 2024-01-01 00:00:00 UTC', page)
+        self.assertIn('href="/bot/subscriptions?review_after=13#delivery-review"', page)
+        self.assertIn('name="decision" value="sent" required', page)
+        self.assertIn('name="decision" value="retry" required', page)
+        self.assertIn('name="confirmed" value="1" required', page)
+        self.assertEqual(page.count('action="/bot/delivery-review"'), 1)
+        for text in ('Delivery #13', 'private-post-id', 'private-media-url', push.HEALTH['uncertain']):
+            self.assertNotIn(text, page)
+        self.assertIn('Save Fanclub session', page)
+        self.assertIn('Unsubscribe', page)
+        self.assertEqual(calls, [('list', {}), ('review_deliveries', {'after': 0})])
+
+        status, page, _ = self.request('subscriptions?review_after=13', cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('No parts are currently available for review on this page.', page)
+        self.assertIn('First review page', page)
+        self.assertNotIn('Save decision', page)
+        for query in ('-1', '73&review_after=7', '', '9223372036854775808'):
+            self.assertEqual(self.request('subscriptions?review_after=' + query, cookie=cookie)[0], 400)
+        self.assertEqual(len(calls), 4)
+
+    def test_delivery_review_separates_unavailable_and_legacy_health(self):
+        from media_bot import push
+
+        self.c.setting('push_health.takaneko', 'uncertain')
+        cookie, _ = self.login()
+        self.enterContext(patch.object(push, 'providers', return_value={'takaneko': {}}))
+        control = self.enterContext(patch.object(push, 'control'))
+        control.return_value = dict(users=[], capabilities=['set_session'])
+        _, body, _ = self.request('subscriptions', cookie=cookie)
+        self.assertIn('last provider report', body)
+        self.assertIn('Save Fanclub session', body)
+        control.assert_called_once_with({}, 'list')
+
+        listing = dict(users=[], capabilities=['review_deliveries', 'set_session'])
+        for bad in (OSError(), {'items': [{'delivery_id': 2}], 'next_after': None},
+                    {'items': [None] * 21, 'next_after': 2}, {'items': [], 'next_after': 4}):
+            control.side_effect = [listing, bad]
+            status, page, _ = self.request('subscriptions', cookie=cookie)
+            self.assertEqual(status, 200)
+            self.assertIn('Live delivery review is unavailable', page)
+            self.assertIn('Save Fanclub session', page)
+            for text in ('No parts are currently available', 'Save decision', push.HEALTH['uncertain']):
+                self.assertNotIn(text, page)
+
+    def test_delivery_review_requires_confirmed_single_attempt_and_provider_ack(self):
+        from media_bot import push
+
+        entry = {'uid': 2000, 'control': '/fixture/provider.sock'}
+        self.enterContext(patch.object(push, 'providers', return_value={'takaneko': entry}))
+        rpc = self.enterContext(patch.object(push.push_socket, 'exchange'))
+        form = dict(provider='takaneko', delivery_id='12', position='1', attempt='a' * 32,
+                    decision='sent', confirmed='1')
+        self.assertEqual(self.request('delivery-review', form=form)[0], 401)
+        cookie, csrf = self.login()
+        self.assertEqual(self.request('delivery-review', cookie=cookie)[0], 404)
+        self.assertEqual(self.request('delivery-review', cookie=cookie, form=form)[0], 403)
+        form['csrf'] = csrf
+        self.assertEqual(self.request('delivery-review', cookie=cookie, origin='https://elsewhere.example', form=form)[0], 403)
+        for fields in (dict(provider='other'), dict(position='-1'), dict(position='01'),
+                       dict(delivery_id='9223372036854775808'), dict(delivery_id='0'), dict(attempt='X' * 32),
+                       dict(confirmed=''), dict(decision=''), dict(decision='all'), dict(user_id='90001')):
+            self.assertEqual(self.request('delivery-review', cookie=cookie, form={**form, **fields})[0], 400)
+        self.assertEqual(self.request('delivery-review', cookie=cookie,
+                                      form=[*form.items(), ('decision', 'retry')])[0], 400)
+        rpc.assert_not_called()
+
+        for decision in ('sent', 'retry'):
+            rpc.return_value = {'ok': True, 'decision': decision}
+            status, _, headers = self.request('delivery-review', cookie=cookie, form=dict(form, decision=decision))
+            self.assertEqual((status, headers['Location']), (303, '/bot/subscriptions#delivery-review'))
+            self.assertIn('mb_update=delivery-review', headers['Set-Cookie'])
+            self.assertEqual(rpc.call_args.args, (entry['control'], entry['uid'], {
+                'op': 'resolve_delivery', 'delivery_id': 12, 'position': 1, 'attempt': form['attempt'], 'decision': decision}))
+        for reply, expected in (({'ok': False, 'error': 'stale'}, 409), ({'ok': False, 'error': 'unavailable'}, 503),
+                                ({'ok': True, 'decision': 'retry'}, 503), (OSError(), 503)):
+            rpc.side_effect = [reply]
+            status, page, headers = self.request('delivery-review', cookie=cookie, form=form)
+            self.assertEqual(status, expected)
+            self.assertIn('href="/bot/subscriptions#delivery-review"', page)
+            self.assertIn('role="alert"', page)
+            self.assertNotIn('Delivery decision recorded.', page)
+            self.assertIsNone(headers.get('Set-Cookie'))
+
     def test_independent_connection_forms_and_validation_return(self):
         from media_bot import accounts
 

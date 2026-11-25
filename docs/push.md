@@ -33,4 +33,12 @@ Health values are `ok`, `account`, `storage`, `rate_limit`, `access`, `network`,
 
 Checkpoint an attempted delivery in the producer before the send. A successful send returns `{"ok":true,"message_id":123}`. A confirmed rejection returns an HTTP-style 4xx `code` and may include `retry_after`. A timeout, malformed reply, or other failure after dispatch leaves delivery uncertain. Resolve it before retrying.
 
-The bundled Takaneko provider adds `"capabilities":["set_session"]` to its list response. The authenticated web console can submit `set_session` with the operator's Fanclub session to that provider. It accepts session objects or browser cookie arrays through the Takaneko subscriptions form. The reply contains only the operation result. Other providers can implement the subscription protocol above independently.
+The bundled Takaneko provider advertises optional control operations in the `capabilities` array of its list response.
+
+| Capability | Console operation |
+| --- | --- |
+| `set_session` | Save a Fanclub session object or browser cookie array. The reply contains only the operation result. |
+| `set_enabled` | Switch Takaneko polling and delivery on or off. |
+| `review_deliveries` | Page through unconfirmed parts using `review_deliveries`. After checking with the recipient, submit `resolve_delivery` with the delivery ID, part position, attempt identifier and decision. Reload the list if the attempt has changed. |
+
+Other producers can implement the subscription operations independently of these capabilities.

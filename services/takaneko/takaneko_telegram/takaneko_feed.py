@@ -11,6 +11,7 @@ import logging
 import mimetypes
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import sqlite3
@@ -52,11 +53,28 @@ def initialize():
         CREATE TABLE IF NOT EXISTS tk_parts(delivery_id INTEGER REFERENCES tk_deliveries(id),position INTEGER,
           payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'pending',telegram_id TEXT,
           PRIMARY KEY(delivery_id,position));
+        CREATE TABLE IF NOT EXISTS tk_review_attempts(
+          delivery_id INTEGER PRIMARY KEY REFERENCES tk_deliveries(id) ON DELETE CASCADE,
+          position INTEGER NOT NULL, attempt TEXT NOT NULL, active INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS tk_uncertain_deliveries ON tk_deliveries(id) WHERE state='uncertain';
+        CREATE INDEX IF NOT EXISTS tk_active_review_attempts ON tk_review_attempts(delivery_id) WHERE active=1;
+        CREATE TRIGGER IF NOT EXISTS tk_finish_review_attempt AFTER UPDATE OF state ON tk_parts
+          WHEN OLD.state='uncertain' AND NEW.state!='uncertain'
+          BEGIN
+            DELETE FROM tk_review_attempts WHERE delivery_id=OLD.delivery_id AND position=OLD.position;
+          END;
         CREATE TABLE IF NOT EXISTS tk_links(digest TEXT PRIMARY KEY,delivery_id INTEGER NOT NULL REFERENCES tk_deliveries(id),
           path TEXT NOT NULL,name TEXT NOT NULL,expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS tk_link_retention(path TEXT PRIMARY KEY,post_id TEXT NOT NULL,
           expires REAL NOT NULL);
         ''')
+        # Give unresolved pre-upgrade checkpoints a stable identity. Reopening
+        # the database must never replace a token or release a live sender.
+        db.execute("""INSERT OR IGNORE INTO tk_review_attempts(delivery_id,position,attempt,active)
+                      SELECT d.id, MIN(p.position), lower(hex(randomblob(16))), 0
+                      FROM tk_deliveries d JOIN tk_parts p ON p.delivery_id=d.id
+                      WHERE d.state='uncertain' AND p.state='uncertain'
+                      GROUP BY d.id HAVING COUNT(*)=1""")
         db.execute("INSERT OR IGNORE INTO settings VALUES ('takaneko_enabled','false')")
 
 
@@ -432,21 +450,39 @@ def deliver(delivery,send=None):
             if not is_enabled(db) or not subscribed(delivery['user_id'],db):return
             state=db.execute('SELECT state FROM tk_deliveries WHERE id=?',(delivery['id'],)).fetchone()[0]
             if state not in ('pending','ready'):return
-            db.execute("UPDATE tk_parts SET state='uncertain' WHERE delivery_id=? AND position=?",(delivery['id'],part['position']))
+            claimed = db.execute("""UPDATE tk_parts SET state='uncertain'
+                                    WHERE delivery_id=? AND position=? AND state='pending'""",
+                                 (delivery['id'], part['position'])).rowcount
+            if not claimed:return
+            attempt = secrets.token_hex(16)
+            db.execute('INSERT OR REPLACE INTO tk_review_attempts VALUES (?,?,?,1)',
+                       (delivery['id'], part['position'], attempt))
             db.execute("UPDATE tk_deliveries SET state='uncertain',error='傳送結果待確認' WHERE id=?",(delivery['id'],))
+        checkpoint_saved = False
         try:
-            result=send_part(delivery,json.loads(part['payload']),send)
+            with transport.send_guard(attempt):
+                result=send_part(delivery,json.loads(part['payload']),send)
             if not isinstance(result,dict) or not result.get('message_id'):raise ValueError('Missing Telegram receipt')
             _save_receipt(delivery['id'],part['position'],result['message_id'])
+            checkpoint_saved = True
         except TelegramError as error:
             # Gateway/server errors may have happened AFTER acceptance. Fail closed.
             if error.code>=500 or error.code<400:return
             retry_at=time.time()+max(5,error.retry)
             if error.code==429:_telegram_cooldown=max(_telegram_cooldown,retry_at)
             _save_rejection(delivery['id'],part['position'],error.code,retry_at)
+            checkpoint_saved = True
             if error.code==429:_telegram_cooldown=0.0
             return
         except Exception:return  # Persisted uncertainty, never replay automatically.
+        finally:
+            # Normally both processes have released their descriptors already.
+            # On socket timeout, the remote descriptor keeps this send fenced.
+            transport.send_finished(attempt)
+            if not checkpoint_saved:
+                _retry_write(lambda db: db.execute(
+                    'UPDATE tk_review_attempts SET active=0 WHERE delivery_id=? AND attempt=?',
+                    (delivery['id'], attempt)))
     with c.db() as db:db.execute("UPDATE tk_deliveries SET state='sent',error='' WHERE id=? AND state='ready'",(delivery['id'],))
 
 
@@ -463,16 +499,79 @@ def retry_delivery(delivery_id):
         db.execute('UPDATE tk_posts SET retry_at=0,error=? WHERE id=?',('',row['post_id']))
 
 
-def resolve_uncertain(delivery_id,action):
-    if action not in ('sent','retry'):raise ValueError('無效操作')
+REVIEW_PAGE_SIZE = 20
+
+
+def _review_rows(db, after, through, limit):
+    # Project only operator-visible metadata from the frozen layout.
+    db.create_function('send_finished', 1, transport.send_finished)
+    exclusions = ','.join('?' for _ in EXCLUDED_POSTS)
+    exclude_posts = f'AND d.post_id NOT IN ({exclusions})' if exclusions else ''
+    query = f"""SELECT d.id AS delivery_id, d.user_id, d.created, p.position, a.attempt,
+                       (SELECT COUNT(*) FROM tk_parts WHERE delivery_id=d.id) AS total,
+                       CASE WHEN json_valid(p.payload) THEN
+                         CASE WHEN json_extract(p.payload,'$.kind') IN
+                              ('text','photo','video','document','audio','animation')
+                              THEN json_extract(p.payload,'$.kind') ELSE 'attachment' END
+                         ELSE 'attachment' END AS kind
+                FROM tk_review_attempts a
+                JOIN tk_deliveries d ON d.id=a.delivery_id
+                JOIN tk_parts p ON p.delivery_id=d.id AND p.position=a.position
+                JOIN tk_subscriptions s ON s.user_id=d.user_id AND s.enabled=1
+                WHERE d.id>? AND d.id<=? AND a.active=0
+                  AND d.state='uncertain' AND p.state='uncertain' AND p.telegram_id IS NULL
+                  AND CASE WHEN a.active=0 THEN send_finished(a.attempt) ELSE 0 END
+                  AND NOT EXISTS (SELECT 1 FROM tk_parts other WHERE other.delivery_id=d.id
+                                  AND other.position!=p.position AND other.state='uncertain')
+                  {exclude_posts}
+                ORDER BY d.id LIMIT ?"""
+    return [dict(row) for row in db.execute(query, (after, through, *EXCLUDED_POSTS, limit))]
+
+
+def review_deliveries(after=0):
+    if type(after) is not int or not 0 <= after < 2**63:
+        return {'ok': False, 'error': 'invalid'}
+    with c.db() as db:
+        rows = _review_rows(db, after, 2**63 - 1, REVIEW_PAGE_SIZE + 1)
+    items = rows[:REVIEW_PAGE_SIZE]
+    return {'ok': True, 'items': items, 'next_after': items[-1]['delivery_id'] if len(rows) > len(items) else None}
+
+
+def resolve_delivery(delivery_id, position, attempt, decision):
+    if (type(delivery_id) is not int or not 0 < delivery_id < 2**63
+            or type(position) is not int or not 0 <= position < 2**63
+            or not isinstance(attempt, str) or not re.fullmatch('[0-9a-f]{32}', attempt)
+            or decision not in ('sent', 'retry')):
+        return {'ok': False, 'error': 'invalid'}
+    with c.db() as db:
+        rows = _review_rows(db, delivery_id - 1, delivery_id, 1)
+    if not rows or rows[0]['position'] != position or rows[0]['attempt'] != attempt:
+        return {'ok': False, 'error': 'stale'}
+    # Check Bot access over the socket before taking a writer lock. Recheck
+    # the provider subscription and the exact attempt inside the transaction.
+    try:
+        if not transport.review_allowed(rows[0]['user_id']):
+            return {'ok': False, 'error': 'stale'}
+    except (OSError, RuntimeError, ValueError):
+        return {'ok': False, 'error': 'unavailable'}
     with c.db() as db:
         db.execute('BEGIN IMMEDIATE')
-        row=db.execute('SELECT user_id,state,post_id FROM tk_deliveries WHERE id=?',(delivery_id,)).fetchone()
-        if not row or row['state']!='uncertain':raise ValueError('此工作沒有待確認訊息')
-        require_allowed_post(row['post_id'])
-        if not subscribed(row['user_id'],db):raise ValueError('用戶未訂閱或無存取權限')
-        db.execute('UPDATE tk_parts SET state=? WHERE delivery_id=? AND state=\'uncertain\'',('sent' if action=='sent' else 'pending',delivery_id))
-        db.execute("UPDATE tk_deliveries SET state='ready',error='',retry_at=0 WHERE id=?",(delivery_id,))
+        if _review_rows(db, delivery_id - 1, delivery_id, 1) != rows:
+            return {'ok': False, 'error': 'stale'}
+        db.execute('UPDATE tk_parts SET state=? WHERE delivery_id=? AND position=?',
+                   ('sent' if decision == 'sent' else 'pending', delivery_id, position))
+        db.execute("UPDATE tk_deliveries SET state='ready',error='',retry_at=0 WHERE id=?", (delivery_id,))
+    return {'ok': True, 'decision': decision}
+
+
+def current_review(delivery_id):
+    if type(delivery_id) is not int or not 0 < delivery_id < 2**63:
+        raise ValueError('Invalid delivery ID.')
+    with c.db() as db:
+        rows = _review_rows(db, delivery_id - 1, delivery_id, 1)
+    if not rows:
+        raise ValueError('No reviewable delivery part.')
+    return rows[0]
 
 
 def process_once():
@@ -580,12 +679,25 @@ def process_cycle(last_health):
     return last_health
 
 
+def _release_abandoned_sends():
+    # Called only by the singleton sender, outside its delivery loop. This also
+    # recovers if a previous attempt exhausted the database writer retries.
+    with c.db() as db:
+        if db.execute('SELECT 1 FROM tk_review_attempts WHERE active=1 LIMIT 1').fetchone():
+            db.execute('UPDATE tk_review_attempts SET active=0 WHERE active=1')
+
+
 def run(stop=None):
     # Hold the singleton lock until BOTH loops have stopped. A supervisor can
     # safely replace a failed feed without leaving a duplicate inventory thread.
     with (c.CONTROL/'takaneko.lock').open('a') as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return
+        # Only the owner of the sender singleton can know a previous process
+        # has exited. Its uncheckpointed sends now require manual review.
+        _release_abandoned_sends()
+        for path in c.CONTROL.glob('.sending-*'):
+            transport.send_finished(path.name.removeprefix('.sending-'))
         stop=stop or threading.Event()
         poller=threading.Thread(target=poll_loop,args=(stop,),daemon=True)
         poller.start()
@@ -601,6 +713,7 @@ def run(stop=None):
                         if not available:
                             stop.wait(2)
                             continue
+                        _release_abandoned_sends()
                         last_health = process_cycle(last_health)
                 except Exception as error:
                     _report_error('takaneko_process_error','通知處理暫時不可用；將自動重試，進度已保留',error)

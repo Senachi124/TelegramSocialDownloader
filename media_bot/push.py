@@ -33,11 +33,17 @@ class FanclubSessionRequired(ValueError):
     pass
 
 
+class DeliveryReviewChanged(ValueError):
+    pass
+
+
 def control(entry, operation, **fields):
     reply = push_socket.exchange(entry['control'], entry['uid'], {'op': operation, **fields})
     if reply.get('ok') is not True:
         if operation == 'set_enabled' and reply.get('error') == 'session_required':
             raise FanclubSessionRequired('Save a Fanclub session before enabling notifications.')
+        if operation == 'resolve_delivery' and reply.get('error') == 'stale':
+            raise DeliveryReviewChanged('Delivery is no longer eligible for this decision.')
         raise ValueError('Subscription service unavailable')
     return reply
 
@@ -79,6 +85,12 @@ def dispatch(entry, request, fd, send=None, slug=None):
     if request.get('op') == 'limits' and fd is None:
         return {'ok': True, 'file_limit': limits.telegram_file_limit()}
     chat = request.get('user_id')
+    if request.get('op') == 'review_allowed':
+        # The provider rechecks its subscription in the resolution transaction.
+        # Calling its control socket from this request would recurse into the same worker pool.
+        if slug != 'takaneko' or fd is not None or request.keys() != {'op', 'user_id'}:
+            return {'ok': False, 'code': 403}
+        return {'ok': True} if access.allowed(chat) else {'ok': False, 'code': 403}
     if not access.allowed(chat):
         return {'ok': False, 'code': 403}
     if control(entry, 'subscribed', user_id=chat).get('enabled') is not True:
@@ -126,8 +138,8 @@ def dispatch(entry, request, fd, send=None, slug=None):
         return {'ok': False, 'error': 'uncertain'}
 
 
-def web_panel(hidden):
-    from .admin import views as layout
+def web_panel(hidden, review_after=0):
+    from .admin import delivery_review, views as layout
 
     configured = providers()
     if not configured:
@@ -149,14 +161,25 @@ def web_panel(hidden):
                 raise ValueError('Invalid subscriber list')
             subscribed = set(subscribers)
         except (OSError, ValueError, KeyError):
-            sections.append(section + '<p>Subscriber list unavailable. Check the provider service and reload this page.</p></section>')
+            section += '<p>Subscriber list unavailable. Check the provider service and reload this page.</p>'
+            if slug == 'takaneko':
+                section += delivery_review.unavailable()
+            sections.append(section + '</section>')
             continue
 
         health = core.get_setting('push_health.' + slug, 'ok')
-        if health in HEALTH and health != 'ok':
+        caps = listing.get('capabilities', [])
+        can_review = slug == 'takaneko' and 'review_deliveries' in caps
+        if slug == 'takaneko' and health == 'uncertain':
+            if not can_review:
+                section += ('<p class="state warn">The last provider report flagged an unconfirmed send. '
+                            'Update the provider to view the live review list.</p>')
+        elif health in HEALTH and health != 'ok':
             section += f'<p class="state warn">{html.escape(HEALTH[health])}</p>'
+        if can_review:
+            section += delivery_review.panel(entry, hidden, users, subscribed, review_after)
         provider = hidden + layout.hidden_field('provider', slug)
-        if slug == 'takaneko' and 'set_session' in listing.get('capabilities', []):
+        if slug == 'takaneko' and 'set_session' in caps:
             section += '<h3>Fanclub session</h3>'
             controls = layout.field('session', 'Fanclub login (JSON)', 'password',
                                     attrs='required autocomplete="new-password" spellcheck="false" aria-describedby="fanclub-login-help"')
@@ -204,6 +227,8 @@ def web_post(form):
             raise ValueError('Supply a Fanclub session or cookie array')
         control(entry, 'set_session', session=session)
         return
+    if form.get('action'):
+        raise ValueError('Unknown subscription action')
     uid = int(form.get('user_id') or 0)
     enabled = form.get('enabled')
     if entry is None or enabled not in ('0', '1') or uid <= 0:

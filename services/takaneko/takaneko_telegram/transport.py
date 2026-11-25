@@ -1,8 +1,46 @@
 """Producer-side interfaces. Bot credentials remain inside the delivery service."""
+from contextlib import contextmanager
+import fcntl
 import os
 import pwd
+import re
+import threading
 
 from media_bot.push_socket import exchange
+
+from . import state
+
+
+_sending = threading.local()
+
+
+@contextmanager
+def send_guard(attempt):
+    path = state.CONTROL / ('.sending-' + attempt)
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_CREAT | os.O_EXCL, 0o600), 'rb') as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        _sending.guard = guard
+        try:
+            yield
+        finally:
+            del _sending.guard
+
+
+def send_finished(attempt):
+    """A queued or running Bot transport keeps the lock even after a producer crash."""
+    if not isinstance(attempt, str) or not re.fullmatch('[0-9a-f]{32}', attempt):
+        return False
+    path = state.CONTROL / ('.sending-' + attempt)
+    try:
+        with path.open('rb') as guard:
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Tokens are never reused. An idle file cannot acquire a sender again.
+            path.unlink(missing_ok=True)
+    except FileNotFoundError:
+        pass
+    except BlockingIOError:
+        return False
+    return True
 
 
 class TelegramError(Exception):
@@ -13,7 +51,8 @@ class TelegramError(Exception):
 def _call(request, stream=None, timeout=10):
     return exchange(os.getenv('TAKANEKO_PUSH_SOCKET', '/run/telegram-social-push/transport.sock'),
                     pwd.getpwnam(os.getenv('TAKANEKO_BOT_USER', 'telegram-social')).pw_uid,
-                    request, stream=stream, timeout=timeout)
+                    request, stream=stream, timeout=timeout,
+                    send_guard=getattr(_sending, 'guard', None) if request['op'] == 'send' else None)
 
 
 def file_limit():
@@ -23,13 +62,21 @@ def file_limit():
     raise RuntimeError('Push transport unavailable')
 
 
-def allowed(user_id):
-    result = _call({'op': 'allowed', 'user_id': user_id})
+def _check_access(operation, user_id):
+    result = _call({'op': operation, 'user_id': user_id})
     if result.get('ok') is True:
         return True
     if result.get('code') == 403:
         return False
     raise RuntimeError('Push transport unavailable')
+
+
+def allowed(user_id):
+    return _check_access('allowed', user_id)
+
+
+def review_allowed(user_id):
+    return _check_access('review_allowed', user_id)
 
 
 def telegram(method, data, files=None):
@@ -89,11 +136,15 @@ def report_health(*, credentials_unavailable=False):
         return _call({'op': 'health', 'status': 'account'})
     # Send only stable reasons for open work, independent of article contents.
     with c.db() as db:
+        db.create_function('send_finished', 1, send_finished)
         failed = db.execute("""SELECT p.error FROM tk_posts p WHERE p.error!=''
                               AND EXISTS(SELECT 1 FROM tk_deliveries d WHERE d.post_id=p.id
                               AND d.state IN ('pending','ready','paused')) ORDER BY p.retry_at DESC LIMIT 1""").fetchone()
         paused = db.execute("SELECT 1 FROM tk_deliveries WHERE state='paused' LIMIT 1").fetchone()
-        uncertain = db.execute("SELECT 1 FROM tk_deliveries WHERE state='uncertain' LIMIT 1").fetchone()
+        uncertain = db.execute("""SELECT 1 FROM tk_deliveries d WHERE d.state='uncertain' AND NOT EXISTS
+                                  (SELECT 1 FROM tk_review_attempts a WHERE a.delivery_id=d.id AND
+                                   CASE WHEN a.active=1 THEN 1 ELSE NOT send_finished(a.attempt) END)
+                                  LIMIT 1""").fetchone()
     if failed:
         reason = ('account' if '401' in failed[0] else 'access' if '403' in failed[0]
                   else 'network' if '讀取失敗' in failed[0] else 'format')
@@ -130,7 +181,12 @@ def control(uid, request, fd):
     if op == 'list':
         with c.db() as db:
             users = [row[0] for row in db.execute('SELECT user_id FROM tk_subscriptions WHERE enabled=1')]
-        return {'ok': True, 'users': users, 'capabilities': ['set_session', 'set_enabled']}
+        return {'ok': True, 'users': users, 'capabilities': ['set_session', 'set_enabled', 'review_deliveries']}
+    if op == 'review_deliveries':
+        return feed.review_deliveries(request.get('after', 0))
+    if op == 'resolve_delivery':
+        return feed.resolve_delivery(request.get('delivery_id'), request.get('position'),
+                                     request.get('attempt'), request.get('decision'))
     user_id = request.get('user_id')
     if type(user_id) is not int or not 0 < user_id < 2**63:
         return {'ok': False}

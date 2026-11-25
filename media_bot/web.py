@@ -95,7 +95,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = feature_controls.panel(hidden)
             elif route=='subscriptions':
                 from . import push
-                body = push.web_panel(hidden)
+                from .admin import delivery_review
+                cursors = parse_qs(path.query, keep_blank_values=True).get('review_after', ['0'])
+                try:
+                    if len(cursors) != 1:
+                        raise FormError('Invalid delivery review page.')
+                    after = delivery_review.number(cursors[0], 0)
+                except FormError:
+                    return self.respond(400, 'Invalid delivery review page.')
+                body = push.web_panel(hidden, after)
             elif route=='accounts':
                 platform = parse_qs(path.query).get('platform', [''])[0]
                 body = layout.pools(hidden, selected_platform=platform)
@@ -164,7 +172,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if route == 'account' and content_type.lower().startswith('multipart/form-data'):
                 # Only the YouTube editor accepts files. Keep its return link if decoding fails.
                 form = {'platform': 'youtube'}
-            form = parse_form(content_type, self.rfile.read(length), allow_upload=route=='account')
+            form = parse_form(content_type, self.rfile.read(length), allow_upload=route=='account',
+                              unique_fields=route=='delivery-review')
             if not csrf_matches(form.get('csrf'),signed_in['csrf']):
                 return self.respond(403,'Expired form')
             if route=='logout':

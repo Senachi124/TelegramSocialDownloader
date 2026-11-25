@@ -24,35 +24,36 @@ def _pack(value):
     return raw
 
 
-def _receive(sock):
-    raw, control, flags, _ = sock.recvmsg(_PACKET, socket.CMSG_SPACE(4), socket.MSG_CMSG_CLOEXEC)
+def _receive(sock, stack):
+    raw, control, flags, _ = sock.recvmsg(_PACKET, socket.CMSG_SPACE(8), socket.MSG_CMSG_CLOEXEC)
     fds = array.array('i')
     for level, kind, data in control:
         if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
             fds.frombytes(data)
-    try:
-        if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(fds) > 1:
-            raise ValueError('Invalid packet')
-        result = json.loads(raw)
-        if not isinstance(result, dict):
-            raise ValueError('Invalid object')
-        return result, fds.pop() if fds else None
-    finally:
-        for fd in fds:
-            os.close(fd)
+    for fd in fds:
+        stack.callback(os.close, fd)
+    if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(fds) > 2:
+        raise ValueError('Invalid packet')
+    result = json.loads(raw)
+    if not isinstance(result, dict):
+        raise ValueError('Invalid object')
+    return result, fds
 
 
-def exchange(path, uid, payload, stream=None, timeout=15):
-    with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as sock:
+def exchange(path, uid, payload, stream=None, timeout=15, *, send_guard=None):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as sock, contextlib.ExitStack() as stack:
         sock.settimeout(timeout)
         sock.connect(str(path))
         if peer_uid(sock) != uid:
             raise PermissionError('Unexpected socket owner')
-        ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [stream.fileno()]))] if stream else []
+        fds = array.array('i', [stream.fileno()] if stream else [])
+        if send_guard is not None:
+            fds.append(send_guard.fileno())
+            payload = {**payload, '_send_guard': True}
+        ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, fds)] if fds else []
         sock.sendmsg([_pack(payload)], ancillary)
-        reply, fd = _receive(sock)
-        if fd is not None:
-            os.close(fd)
+        reply, received = _receive(sock, stack)
+        if received:
             raise ValueError('Unexpected attachment')
         return reply
 
@@ -60,20 +61,31 @@ def exchange(path, uid, payload, stream=None, timeout=15):
 def _serve_one(sock, permitted, handle, permits):
     with sock, contextlib.ExitStack() as stack:
         stack.callback(permits.release)
+        attachments = stack.enter_context(contextlib.ExitStack())
         try:
             sock.settimeout(10)
             uid = peer_uid(sock)
             if uid not in permitted:
                 return
-            payload, fd = _receive(sock)
-            if fd is not None:
-                stack.callback(os.close, fd)
+            payload, fds = _receive(sock, attachments)
+            for fd in fds:
                 info = os.fstat(fd)
                 if not stat.S_ISREG(info.st_mode) or fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDONLY:
                     raise ValueError('Invalid attachment')
-            result = handle(uid, payload, fd)
+            if '_send_guard' in payload:
+                # The sender's flock survives process exit, even while this
+                # packet is still queued. Keep its descriptor through dispatch.
+                if (payload.pop('_send_guard') is not True or payload.get('op') != 'send'
+                        or len(fds) != (1 if payload.get('kind') == 'text' else 2)
+                        or os.fstat(fds[-1]).st_size != 0):
+                    raise ValueError('Invalid send guard')
+                fds.pop()
+            if len(fds) > 1:
+                raise ValueError('Unexpected attachment')
+            result = handle(uid, payload, fds[0] if fds else None)
         except Exception:
             result = {'ok': False, 'error': 'unavailable'}
+        attachments.close()
         with contextlib.suppress(OSError):
             sock.sendall(_pack(result))
 

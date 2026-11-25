@@ -59,6 +59,18 @@ sudo env TAKANEKO_SECRET_SOCKET=/run/telegram-social-takaneko-broker/broker.sock
 
 ## Services and operations
 
+### Review an uncertain delivery
+
+Open **Takaneko subscriptions → Delivery review**. A delivery can have multiple parts, such as a text message followed by photos. If Telegram times out or the worker stops before it saves a receipt, the recipient may already have the affected part. The worker holds that delivery and continues eligible work for other deliveries.
+
+1. Find the delivery ID and recipient. Use the queue creation time, part number and type to identify the part in the recipient’s Telegram conversation. Creation time can precede delivery.
+2. Expand the delivery. If the recipient confirms they received that part, choose **Received**. If they confirm it is missing, choose **Missing**. Tick the confirmation box and select **Save decision**. If the recipient is unsure, leave the item on hold.
+3. The worker can then continue any remaining parts. Earlier confirmed parts keep their receipts. A retry can send a duplicate if the part had already arrived.
+
+To exercise both outcomes without sending Telegram messages, run the offline test suite using the command in the README. Its synthetic deliveries simulate lost acknowledgements, manual decisions and subsequent worker runs.
+
+### Service commands
+
 | Component | Purpose |
 | --- | --- |
 | `telegram-social-takaneko.service` | Polls new articles, prepares media, manages subscriptions and delivery checkpoints |
@@ -76,7 +88,7 @@ sudo systemd-run --quiet --wait --pipe --collect \
   /opt/telegram-social-downloader/current/.venv/bin/python -IB -m takaneko_telegram pending
 ```
 
-Substitute `retry ID` for `pending` to retry a definite rejection. For an uncertain send, first check the actual Telegram result and use `resolve ID sent` or `resolve ID retry`. The provider checkpoints an attempted send before contacting Telegram so a restart does not silently duplicate it.
+Substitute `retry ID` for `pending` to retry a definite rejection. For a missing receipt, `pending` lists the recipient, part, position and attempt. After checking that part with the recipient, use `resolve ID sent --position POSITION --attempt TOKEN` or `resolve ID retry --position POSITION --attempt TOKEN`. Copy the zero-based position and attempt from the same row. If another operator has already handled it, run `pending` again and check the current part before making a new decision.
 
 The provider's settings and SQLite delivery state live in `/var/lib/telegram-social-takaneko`; credentials live in the root-only `/var/lib/telegram-takaneko-credentials`. Its unit environment is `/etc/telegram-social-takaneko/.env`. The selected volume contains `telegram-social-takaneko/media` and `telegram-social-takaneko/tmp`. Include these locations in your host backup. During GitHub Actions upgrades the controller drains active provider work, checkpoints the provider and Bot databases, and switches all components to the same release. Pending work resumes from the service-owned database.
 

@@ -33,6 +33,11 @@ def worker():
     feed.run(stop)
 
 
+def describe_part(item):
+    return (f"Delivery {item['delivery_id']}, recipient {item['user_id']}, "
+            f"part {item['position'] + 1}/{item['total']} ({item['kind']})")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -42,6 +47,8 @@ def main():
     resolve = commands.add_parser('resolve')
     resolve.add_argument('delivery', type=int)
     resolve.add_argument('result', choices=('sent', 'retry'))
+    resolve.add_argument('--position', type=int, help='Zero-based position printed by pending')
+    resolve.add_argument('--attempt', help='Attempt token printed by pending')
     args = parser.parse_args()
     if args.command == 'worker':
         worker()
@@ -74,12 +81,30 @@ def main():
     elif args.command == 'retry':
         feed.retry_delivery(args.delivery)
     elif args.command == 'resolve':
-        feed.resolve_uncertain(args.delivery, args.result)
+        if args.position is None or args.attempt is None:
+            if args.position is not None or args.attempt is not None or not sys.stdin.isatty():
+                parser.error('Supply both --position and --attempt from pending.')
+            try:
+                item = feed.current_review(args.delivery)
+            except ValueError as error:
+                parser.exit(1, f'{error}\n')
+            print(describe_part(item))
+            if input(f"After checking the recipient's chat, type {args.result} to confirm: ") != args.result:
+                parser.exit(1, 'Decision cancelled.\n')
+            args.position, args.attempt = item['position'], item['attempt']
+        result = feed.resolve_delivery(args.delivery, args.position, args.attempt, args.result)
+        if not result['ok']:
+            parser.exit(1, 'Delivery could not be resolved: ' + result['error'] + '\n')
     else:
         with state.db() as db:
-            for row in db.execute("""SELECT id,state,error FROM tk_deliveries
-                                     WHERE state IN ('paused','uncertain') ORDER BY id"""):
+            for row in db.execute("SELECT id,state,error FROM tk_deliveries WHERE state='paused' ORDER BY id"):
                 print(*row)
+        after = 0
+        while after is not None:
+            page = feed.review_deliveries(after)
+            for item in page['items']:
+                print(describe_part(item), f"position={item['position']} attempt={item['attempt']}")
+            after = page['next_after']
 
 
 if __name__ == '__main__':

@@ -1,0 +1,27 @@
+[Unit]
+Description=Telegram Social Downloader Takaneko broker
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=root
+Group=telegram-takaneko
+RuntimeDirectory=telegram-social-takaneko-broker
+RuntimeDirectoryMode=0750
+EnvironmentFile=/etc/telegram-social-takaneko/.env
+WorkingDirectory=/opt/telegram-social-downloader/current
+ExecStart=/opt/telegram-social-downloader/current/.venv/bin/python -IB -m takaneko_telegram broker
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=35min
+KillMode=mixed
+UMask=0077
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+LimitCORE=0
+ReadWritePaths=/var/lib/telegram-takaneko-credentials
+
+[Install]
+WantedBy=multi-user.target

@@ -79,6 +79,8 @@ For automatic updates, push a new version tag matching the package version. A su
 
 ## Optional subscription delivery
 
+For Takaneko Fanclub updates, follow the [bundled provider installation](takaneko.md). The installer registers the provider and transport together.
+
 Configure `MEDIA_BOT_PUSH_PROVIDERS` in the environment. Give each provider account access to the transport socket through the `telegram-push` group, restart its process so it picks up the new group, and configure its control socket for access by the bot. See the [provider protocol](push.md).
 
 Add `"push": "telegram-social-push.service"` to the deployment configuration to include the transport in upgrades. Start the unit and restart the web console so it loads the provider map.

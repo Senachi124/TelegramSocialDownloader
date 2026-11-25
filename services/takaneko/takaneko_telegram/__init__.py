@@ -1,0 +1,1 @@
+"""Takaneko notification producer."""

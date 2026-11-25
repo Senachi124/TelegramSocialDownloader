@@ -25,7 +25,11 @@ def main():
         return
     logging.basicConfig(level=logging.WARNING, format='%(levelname)s %(message)s')
     module = 'instagram_cookie_maintenance' if args.component == 'refresh-cookies' else args.component
-    importlib.import_module('.' + module, __package__).main()
+    component = importlib.import_module('.' + module, __package__)
+    if module == 'web':
+        component.main([])  # The dispatcher already consumed the service arguments.
+    else:
+        component.main()
 
 
 if __name__ == '__main__':

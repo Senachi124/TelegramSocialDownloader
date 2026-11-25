@@ -1,0 +1,31 @@
+[Unit]
+Description=Telegram Social Downloader Takaneko worker
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=@MEDIA@ @TMP@ /var/lib/telegram-social-takaneko
+Requires=telegram-social-takaneko-broker.service telegram-social-push.service
+After=telegram-social-takaneko-broker.service telegram-social-push.service
+
+[Service]
+User=telegram-takaneko
+Group=telegram-push
+SupplementaryGroups=telegram-takaneko telegram-push
+RuntimeDirectory=telegram-social-takaneko
+RuntimeDirectoryMode=0750
+EnvironmentFile=/etc/telegram-social-takaneko/.env
+WorkingDirectory=/opt/telegram-social-downloader/current
+ExecStart=/opt/telegram-social-downloader/current/.venv/bin/python -IB -m takaneko_telegram worker
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=35min
+KillMode=mixed
+UMask=0077
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+LimitCORE=0
+ReadWritePaths=/var/lib/telegram-social-takaneko @MEDIA@ @TMP@
+
+[Install]
+WantedBy=multi-user.target

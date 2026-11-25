@@ -92,6 +92,32 @@ class UpgradeTests(unittest.TestCase):
         self.run_upgrade()
         self.assertEqual(self.enabled,'false')
 
+    def register_provider(self):
+        lock = Path(self.temp.name) / 'provider.lock'
+        lock.touch()
+        self.config.update(takaneko_worker='provider.service', takaneko_broker='secrets.service',
+                           takaneko_links='links.service', takaneko_data=str(Path(self.temp.name)/'provider'),
+                           takaneko_deploy_lock=str(lock))
+        return lock
+
+    def test_provider_is_checkpointed_and_restarted_with_same_release(self):
+        self.register_provider()
+        self.run_upgrade()
+        self.assertEqual(len(list(self.backup.glob('*.sqlite3'))), 2)
+        self.assertEqual(next(self.backup.glob('*-takaneko.sqlite3')).read_bytes(), b'fixture')
+        self.control.assert_any_call('start', 'provider.service')
+        self.control.assert_any_call('stop', *reversed(upgrade.units(self.config)))
+
+    def test_active_provider_send_aborts_before_pausing_bot(self):
+        lock = self.register_provider()
+        with lock.open('rb') as running, patch.object(upgrade.time, 'monotonic', side_effect=[0, 200]):
+            upgrade.fcntl.flock(running, upgrade.fcntl.LOCK_SH)
+            with self.assertRaisesRegex(RuntimeError, 'Takaneko operations still active'):
+                self.run_upgrade()
+        self.control.assert_not_called()
+        self.assertFalse(self.phase)
+        self.assertFalse((self.backup/'upgrade-in-progress.json').exists())
+
     def test_wrong_tag_and_distribution_metadata_rejected(self):
         with self.assertRaises(ValueError):
             upgrade.wheel_info(self.wheel,'v1.0.2')

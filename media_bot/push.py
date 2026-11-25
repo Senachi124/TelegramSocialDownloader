@@ -11,6 +11,14 @@ from . import access, core, limits, push_socket
 
 def providers():
     configured = json.loads(os.environ.get('MEDIA_BOT_PUSH_PROVIDERS', '{}'))
+    bundled_uid = os.environ.get('MEDIA_BOT_TAKANEKO_UID', '')
+    if bundled_uid:
+        if not re.fullmatch(r'[1-9][0-9]{0,9}', bundled_uid) or int(bundled_uid) >= 2**32 - 1:
+            raise ValueError('Invalid Takaneko service UID')
+        if 'takaneko' in configured and configured['takaneko'].get('uid') != int(bundled_uid):
+            raise ValueError('Conflicting Takaneko service UIDs')
+        configured.setdefault('takaneko', {'uid': int(bundled_uid),
+                                          'control': '/run/telegram-social-takaneko/control.sock'})
     uids = set()
     for slug, entry in configured.items():
         if (not re.fullmatch(r'[a-z][a-z0-9-]{0,47}', slug) or
@@ -119,13 +127,21 @@ def web_panel(hidden):
     for slug, entry in providers().items():
         section = '<h3>' + html.escape(slug) + '</h3>'
         try:
-            subscribed = set(control(entry, 'list')['users'])
+            listing = control(entry, 'list')
+            subscribed = set(listing['users'])
         except (OSError, ValueError, KeyError):
             sections.append(section + '<p>Subscription service unavailable.</p>')
             continue
         health = HEALTH.get(core.get_setting('push_health.' + slug, 'ok'))
         if health:
             section += '<p>' + html.escape(health) + '</p>'
+        if slug == 'takaneko' and 'set_session' in listing.get('capabilities', []):
+            from . import web_layout as layout
+            controls = layout.hidden_field('provider', slug)
+            controls += layout.field('session', 'Fanclub session or browser cookies (JSON)', 'password',
+                                     attrs='required autocomplete="new-password" spellcheck="false"')
+            controls += layout.button('Save Fanclub session', 'set_session')
+            section += layout.form('subscriptions', hidden, controls)
         for uid, name in users:
             enabled = uid in subscribed
             section += (f'<form method="post" action="{core.BASE}subscriptions">{hidden}'
@@ -140,6 +156,16 @@ def web_panel(hidden):
 
 def web_post(form):
     entry = providers().get(form.get('provider'))
+    if form.get('action') == 'set_session':
+        if entry is None or form.get('provider') != 'takaneko':
+            raise ValueError('Unknown session provider')
+        session = json.loads(form.get('session', ''))
+        if isinstance(session, list):
+            session = {'cookies': session}
+        if not isinstance(session, dict) or not session:
+            raise ValueError('Supply a Fanclub session or cookie array')
+        control(entry, 'set_session', session=session)
+        return
     uid = int(form.get('user_id') or 0)
     enabled = form.get('enabled')
     if entry is None or enabled not in ('0', '1') or uid <= 0:

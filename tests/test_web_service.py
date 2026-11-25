@@ -76,6 +76,25 @@ class WebServiceTests(unittest.TestCase):
         self.assertEqual(status,200)
         return cookie,re.search('name="csrf" value="([^"]+)"',body)[1]
 
+    def test_provider_session_import_requires_admin_and_csrf(self):
+        from media_bot import push
+        entry = {'control': '/run/test-provider.sock', 'uid': 2000}
+        self.enterContext(patch.object(push, 'providers', return_value={'takaneko': entry}))
+        provider = self.enterContext(patch.object(push, 'control', return_value={
+            'ok': True, 'users': [], 'capabilities': ['set_session']
+        }))
+        form = {'provider': 'takaneko', 'action': 'set_session', 'session': '{"accessToken":"sample-secret"}'}
+        self.assertEqual(self.request('subscriptions', form=form)[0], 401)
+        cookie, csrf = self.login()
+        self.assertEqual(self.request('subscriptions', form=form, cookie=cookie)[0], 403)
+        provider.assert_not_called()
+        self.assertEqual(self.request('subscriptions', form=dict(form, csrf=csrf), cookie=cookie)[0], 303)
+        provider.assert_called_once_with(entry, 'set_session', session={'accessToken': 'sample-secret'})
+        status, body, _ = self.request('subscriptions', cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('Save Fanclub session', body)
+        self.assertNotIn('sample-secret', body)
+
     def test_login_access_pools_api_and_subscriptions(self):
         from media_bot import access
         self.assertEqual(self.request('users')[0],303)

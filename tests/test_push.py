@@ -11,6 +11,14 @@ with tempfile.TemporaryDirectory() as bootstrap, patch.dict(os.environ, {'MEDIA_
 
 
 class PushTests(unittest.TestCase):
+    def test_bundled_takaneko_coexists_with_other_providers(self):
+        other = '{"feed":{"uid":801,"control":"/run/example/control.sock"}}'
+        with patch.dict(os.environ, {'MEDIA_BOT_PUSH_PROVIDERS': other, 'MEDIA_BOT_TAKANEKO_UID': '802'}):
+            self.assertEqual(set(push.providers()), {'feed', 'takaneko'})
+            self.assertEqual(push.providers()['takaneko']['uid'], 802)
+            with patch.dict(os.environ, {'MEDIA_BOT_TAKANEKO_UID': '801'}), self.assertRaises(ValueError):
+                push.providers()
+
     def test_rechecks_user_and_subscription_before_dispatch(self):
         with patch.object(push.access,'allowed',return_value=False), patch.object(push, 'control') as provider:
             self.assertEqual(push.dispatch({}, {'op':'send','user_id':1,'kind':'text','text':'Hi'},None)['code'],403)

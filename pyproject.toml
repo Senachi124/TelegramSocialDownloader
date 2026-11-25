@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-social-downloader"
-version = "1.0.3"
+version = "1.1.0"
 description = "Telegram media downloads, subscription delivery and web administration"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,7 +15,8 @@ telegram-social-downloader = "media_bot.__main__:main"
 
 [tool.setuptools]
 license-files = ["INSTAGRAM-WEB-NOTICE.txt"]
-packages = ["media_bot"]
+packages = ["media_bot", "takaneko_telegram"]
+package-dir = {takaneko_telegram = "services/takaneko/takaneko_telegram"}
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

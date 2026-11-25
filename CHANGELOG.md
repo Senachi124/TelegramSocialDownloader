@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.0 — 2026-11-25
+
+- Ship the Takaneko Fanclub feed provider with the bot. Operators can connect their own Fanclub session, manage subscribers in the web console and deliver new posts through Telegram.
+- Keep Fanclub discovery, subscription state and delivery checkpoints in a separate service package. The Linux deployment guide covers installing and updating both services.
+
 ## 1.0.3 — 2026-11-25
 
 - Remove Telegram deployment announcements and retire outstanding announcement approvals.

@@ -1,6 +1,6 @@
 # Telegram Social Downloader
 
-Download media in Telegram and receive subscriptions from connected services. The worker handles Instagram posts and Stories, TikTok, X, Threads, and YouTube videos and Shorts. An HTTPS web console manages the bot.
+Download media in Telegram and receive subscriptions from connected services. The worker handles Instagram posts and Stories, TikTok, X, Threads, and YouTube videos and Shorts. An HTTPS web console manages the bot. The optional Takaneko service uses your own Fanclub account to send new posts to approved subscribers. Both services ship in the same release.
 
 ## What users can do
 
@@ -19,7 +19,7 @@ Download media in Telegram and receive subscriptions from connected services. Th
 | Control | Actions |
 | --- | --- |
 | Users and groups | Review requests, approve or revoke users, set the access policy and manage registered groups. The configured owner has additional Telegram controls. |
-| Subscriptions | View connected providers and change a user’s subscription. Providers keep their own subscriber lists and delivery progress. |
+| Subscriptions | Connect your Takaneko Fanclub session, subscribe or unsubscribe approved users, and see provider health. Each provider owns its subscriber list and delivery progress. |
 | Account pools | Import or update platform cookies, enable or disable an account, select a primary account or rotation policy, and test an account against a supplied post. |
 | APIs | Configure the bot token, Telegram Local Bot API credentials and translation API keys. |
 | Operations | Pause or resume downloads, adjust platform limits and manage failure notifications. A failure alert includes the reason. |
@@ -39,7 +39,8 @@ flowchart TD
     D -->|Translate| J[Translate text or images and reply]
     K[Admin signs in] --> L[Manage accounts, access and subscriptions]
     L --> M[Provider updates subscription]
-    N[Provider detects new content] --> O[Provider checks subscription]
+    T[Fanclub account] --> N[Takaneko detects new posts]
+    N --> O[Queue a delivery for each subscriber]
     O --> P[Bot checks provider identity and user access]
     P -->|Allowed| Q[Send update to Telegram]
     Q --> R[Provider checkpoints delivery]
@@ -80,7 +81,17 @@ The official Telegram API is the default. A self-hosted Local Bot API increases 
 
 Put media and temporary files on the same filesystem under `MEDIA_BOT_DATA`. The worker checks available space before downloading. Set `MEDIA_BOT_STORAGE_UUID` to require a specific filesystem. Run `telegram-social-downloader --env-file .env refresh-cookies` periodically to check enabled Instagram sessions.
 
-### Subscription providers
+### Takaneko Fanclub
+
+Enable the bundled provider on your own Linux host, then sign in to the bot’s web console. Under **Subscriptions → takaneko**, save your own Fanclub session and subscribe the Telegram users you have approved. The first successful poll records a baseline. Subsequent posts go to eligible subscribers. See the [Takaneko setup guide](docs/takaneko.md).
+
+| Component | Source | Responsibility |
+| --- | --- | --- |
+| Telegram bot and web console | [media_bot](media_bot/) | Telegram access, downloads, administration and the shared push transport |
+| Takaneko provider | [services/takaneko](services/takaneko/) | Fanclub login, article discovery, media, subscriptions and per-recipient delivery records |
+| Installation and updates | [deploy](deploy/) | Linux service installation and GitHub Actions release upgrades |
+
+### Other subscription providers
 
 Register each provider in `MEDIA_BOT_PUSH_PROVIDERS` with its own Unix user ID and control socket. Set `MEDIA_BOT_PUSH_SOCKET` to the transport socket and run the push component alongside the bot. See the [provider protocol](docs/push.md).
 

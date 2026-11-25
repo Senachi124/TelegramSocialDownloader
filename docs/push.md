@@ -32,3 +32,5 @@ Use `push_socket.exchange(path, bot_uid, request, stream=None, timeout=15)` for 
 Health values are `ok`, `account`, `storage`, `rate_limit`, `access`, `network`, `uncertain`, `format` and `paused`. The socket verifies peer credentials in both directions.
 
 Checkpoint an attempted delivery in the producer before the send. A successful send returns `{"ok":true,"message_id":123}`. A confirmed rejection returns an HTTP-style 4xx `code` and may include `retry_after`. A timeout, malformed reply, or other failure after dispatch leaves delivery uncertain. Resolve it before retrying.
+
+The bundled Takaneko provider adds `"capabilities":["set_session"]` to its list response. The authenticated web console can submit `set_session` with the operator's Fanclub session to that provider. It accepts session objects or browser cookie arrays through the Subscriptions form. The reply contains only the operation result. Other providers can implement the subscription protocol above independently.

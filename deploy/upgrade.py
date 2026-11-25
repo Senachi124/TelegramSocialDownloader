@@ -45,10 +45,15 @@ def config(filename):
     filename = Path(filename)
     trusted(filename)
     values = json.loads(filename.read_text())
-    for field in ('current','releases','data','backups','web_socket'):
+    provider_keys = ('takaneko_worker','takaneko_broker','takaneko_links','takaneko_data','takaneko_deploy_lock')
+    if any(values.get(key) for key in provider_keys) and not all(values.get(key) for key in (*provider_keys, 'push')):
+        raise ValueError('Takaneko deployment registration is incomplete')
+    paths = ['current','releases','data','backups','web_socket']
+    paths.extend(key for key in ('takaneko_data','takaneko_deploy_lock','takaneko_control_socket') if values.get(key))
+    for field in paths:
         if not Path(values[field]).is_absolute() or '..' in Path(values[field]).parts:
             raise ValueError('Invalid path for ' + field)
-    for field in ('worker','web','broker','push','refresh_timer','refresh_service'):
+    for field in ('worker','web','broker','push','refresh_timer','refresh_service','takaneko_worker','takaneko_broker','takaneko_links'):
         if values.get(field) and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]*\.(?:service|timer)',values[field]):
             raise ValueError('Invalid systemd unit for ' + field)
     if not str(values['health_path']).startswith('/'):
@@ -231,7 +236,40 @@ def request_json(sock,path):
 
 
 def units(cfg):
-    return [cfg[key] for key in ('broker','web','push','worker') if cfg.get(key)]
+    order = ('broker','web','push','worker','takaneko_broker','takaneko_links','takaneko_worker')
+    return [cfg[key] for key in order if cfg.get(key)]
+
+
+@contextlib.contextmanager
+def provider_guard(cfg):
+    if not cfg.get('takaneko_worker'):
+        yield
+        return
+    # The producer holds a shared lock during inventory and delivery. Wait while the
+    # bot is still accepting sends, then keep the producer idle through rollback.
+    path = Path(cfg['takaneko_deploy_lock'])
+    trusted(path)
+    if not path.is_file():
+        raise ValueError('Expected a regular Takaneko deployment lock file')
+    with path.open('rb') as lock:
+        deadline = time.monotonic() + 150
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('Takaneko operations still active')
+                time.sleep(1)
+        yield
+
+
+def provider_ready(cfg):
+    if not cfg.get('takaneko_control_socket'):
+        return True
+    info = Path(cfg['takaneko_control_socket']).lstat()
+    return (stat.S_ISSOCK(info.st_mode) and
+            info.st_uid == pwd.getpwnam(property_of(cfg['takaneko_worker'], 'User')).pw_uid)
 
 
 def check(cfg):
@@ -241,7 +279,7 @@ def check(cfg):
             pid=property_of(cfg['worker'],'MainPID')
             # Polling, translation and download threads start after database recovery.
             worker_ready=pid!='0' and len(list((Path('/proc')/pid/'task').iterdir())) >= 6
-            if (worker_ready and all(active(u) for u in units(cfg)) and
+            if (worker_ready and all(active(u) for u in units(cfg)) and provider_ready(cfg) and
                     request_json(cfg['web_socket'],cfg['health_path']).get('status')=='ok' and
                     (not cfg.get('broker_socket') or
                      'token_set' in request_json(cfg['broker_socket'],'/status'))):
@@ -293,7 +331,8 @@ def upgrade(cfg,wheel,tag,sha):
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         journal_file=backups/'upgrade-in-progress.json'
         if journal_file.exists():
-            restore(cfg,json.loads(journal_file.read_text()))
+            with provider_guard(cfg):
+                restore(cfg,json.loads(journal_file.read_text()))
             journal_file.unlink()
         old=current.resolve(strict=True)
         trusted(old)
@@ -314,44 +353,49 @@ def upgrade(cfg,wheel,tag,sha):
             raise ValueError('Unexpected bot admission state')
         timer_active=bool(cfg.get('refresh_timer') and active(cfg['refresh_timer']))
         journal=dict(previous=str(old),next=str(target),enabled=enabled,timer_active=timer_active)
-        atomic_json(journal_file,journal)
-        try:
-            if timer_active:
-                systemctl('stop',cfg['refresh_timer'])
-            if cfg.get('refresh_service') and active(cfg['refresh_service']):
-                raise RuntimeError('Cookie refresh in progress')
-            # Freeze administrative edits first, then let all previously admitted work finish.
-            systemctl('stop',cfg['web'])
-            database(cfg,'set','false')
-            deadline=time.monotonic()+150
-            while not free_of_work(cfg):
-                if time.monotonic()>deadline:
-                    raise RuntimeError('Telegram operations still active')
-                time.sleep(1)
-            if freeze and Path(freeze).exists():
-                raise RuntimeError('Backup freeze in progress')
-            systemctl('stop',*reversed(units(cfg)))
-            if database(cfg,'busy')!='0':
-                raise RuntimeError('Work started during the drain')
-            stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-            checkpoint=backups/(stamp+'-'+tag+'.sqlite3')
-            with open(checkpoint,'xb',opener=lambda p,flags: os.open(p,flags,0o600)) as dst:
-                database(cfg,'snapshot',output=dst)
-                dst.flush()
-                os.fsync(dst.fileno())
-            switch(current,target)
-            for unit in units(cfg):
-                systemctl('start',unit)
-            check(cfg)
-            database(cfg,'set',enabled)
-            if timer_active:
-                systemctl('start',cfg['refresh_timer'])
-            journal_file.unlink()
-            print(f'Activated {tag} at {sha}.')
-        except BaseException:
-            restore(cfg,journal)
-            journal_file.unlink()
-            raise
+        with provider_guard(cfg):
+            atomic_json(journal_file,journal)
+            try:
+                if timer_active:
+                    systemctl('stop',cfg['refresh_timer'])
+                if cfg.get('refresh_service') and active(cfg['refresh_service']):
+                    raise RuntimeError('Cookie refresh in progress')
+                # Freeze administrative edits first, then let all previously admitted work finish.
+                systemctl('stop',cfg['web'])
+                database(cfg,'set','false')
+                deadline=time.monotonic()+150
+                while not free_of_work(cfg):
+                    if time.monotonic()>deadline:
+                        raise RuntimeError('Telegram operations still active')
+                    time.sleep(1)
+                if freeze and Path(freeze).exists():
+                    raise RuntimeError('Backup freeze in progress')
+                systemctl('stop',*reversed(units(cfg)))
+                if database(cfg,'busy')!='0':
+                    raise RuntimeError('Work started during the drain')
+                stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+                snapshots = [(cfg, stamp+'-'+tag+'.sqlite3')]
+                if cfg.get('takaneko_worker'):
+                    provider = dict(cfg, worker=cfg['takaneko_worker'], data=cfg['takaneko_data'])
+                    snapshots.append((provider, stamp+'-'+tag+'-takaneko.sqlite3'))
+                for service, name in snapshots:
+                    with open(backups/name,'xb',opener=lambda p,flags: os.open(p,flags,0o600)) as dst:
+                        database(service,'snapshot',output=dst)
+                        dst.flush()
+                        os.fsync(dst.fileno())
+                switch(current,target)
+                for unit in units(cfg):
+                    systemctl('start',unit)
+                check(cfg)
+                database(cfg,'set',enabled)
+                if timer_active:
+                    systemctl('start',cfg['refresh_timer'])
+                journal_file.unlink()
+                print(f'Activated {tag} at {sha}.')
+            except BaseException:
+                restore(cfg,journal)
+                journal_file.unlink()
+                raise
 
 
 def main():

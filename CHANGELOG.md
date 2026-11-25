@@ -4,6 +4,8 @@
 
 ## 1.1.0 — 2026-11-25
 
+- Include a dedicated Fanclub credential broker in the release wheel. Database checkpoints use the configured service identity and groups.
+
 - Ship the Takaneko Fanclub feed provider with the bot. Operators can connect their own Fanclub session, manage subscribers in the web console and deliver new posts through Telegram.
 - Keep Fanclub discovery, subscription state and delivery checkpoints in a separate service package. The Linux deployment guide covers installing and updating both services.
 

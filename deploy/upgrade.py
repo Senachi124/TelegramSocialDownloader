@@ -5,6 +5,7 @@ import contextlib
 from datetime import datetime, timezone
 from email.parser import BytesParser
 import fcntl
+import grp
 import hashlib
 import http.client
 import json
@@ -181,8 +182,14 @@ def database(cfg,op,*args,output=None):
     user=pwd.getpwnam(property_of(cfg['worker'],'User'))
     if user.pw_uid==0:
         raise ValueError('The worker must run under a dedicated service user')
+    def group_id(value):
+        return int(value) if value.isdecimal() else grp.getgrnam(value).gr_gid
+
+    primary = property_of(cfg['worker'], 'Group')
+    groups = property_of(cfg['worker'], 'SupplementaryGroups').split()
     result=spawn(['/usr/bin/python3','-I','-c',DB_PROGRAM,cfg['data'],op,*args],
-        user=user.pw_uid,group=user.pw_gid,extra_groups=[],cwd='/',timeout=120,
+        user=user.pw_uid,group=group_id(primary) if primary else user.pw_gid,
+        extra_groups=[group_id(name) for name in groups],cwd='/',timeout=120,
         stdout=output if output is not None else subprocess.PIPE)
     return result.stdout.decode().strip() if result.stdout is not None else None
 

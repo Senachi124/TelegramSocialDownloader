@@ -38,7 +38,8 @@ jobs:
               assert os.environ['GITHUB_REF_NAME'] == 'v' + __version__
           with zipfile.ZipFile(next((root/'dist').glob('*.whl'))) as wheel:
               assert {'media_bot/web.py', 'media_bot/worker.py', 'media_bot/broker.py', 'media_bot/push.py',
-                      'takaneko_telegram/__main__.py', 'takaneko_telegram/takaneko_feed.py'} <= set(wheel.namelist())
+                      'takaneko_telegram/__main__.py', 'takaneko_telegram/takaneko_feed.py',
+                      'takaneko_telegram/secrets.py'} <= set(wheel.namelist())
           PY
       - name: Install bot and Takaneko provider on a clean Linux host
         if: matrix.python == '3.11'

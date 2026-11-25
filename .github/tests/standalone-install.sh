@@ -2,6 +2,7 @@
 # Exercise the release wheel and public installers on a disposable Ubuntu Actions VM.
 set -euo pipefail
 : "${RUNNER_TEMP:?}"
+trap 'sudo journalctl --no-pager -n 60 -u "telegram-social-*.service"' ERR
 sudo ./deploy/install.sh dist/*.whl "$GITHUB_SHA"
 sudo python3 - <<'PY'
 import hashlib

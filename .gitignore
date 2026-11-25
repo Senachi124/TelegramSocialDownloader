@@ -24,6 +24,7 @@ dist/
 .test-work/
 
 # Portable parser and synthetic tests are source, not credentials.
+!services/takaneko/takaneko_telegram/secrets.py
 !media_bot/youtube_cookies.py
 !tests/test_youtube_cookies.py
 !/.env.example

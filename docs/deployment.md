@@ -6,11 +6,11 @@ The bot, web console and credential broker run as systemd services. The optional
 
 Use a Linux host with systemd, Python 3.11 or newer with venv support, FFmpeg, ffprobe, a TLS reverse proxy, and Deno for YouTube extraction. The bootstrap script uses the `www-data` group for access to the web socket. Create that group on distributions that use a different proxy identity and add the proxy worker to it.
 
-On a trusted workstation, select a published release and download its source and wheel. The following commands use the GitHub CLI and a clean checkout. Substitute your release version.
+On a trusted workstation, select a published release and download its source and wheel. The following commands use the GitHub CLI and a clean checkout. They select the latest published release.
 
 ```sh
 repo=Senachi124/TelegramSocialDownloader
-tag=v1.0.1
+tag=$(gh api "repos/$repo/releases/latest" --jq .tag_name)
 git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" telegram-app
 cd telegram-app
 gh release download "$tag" --repo "$repo" --pattern '*.whl' --dir packages

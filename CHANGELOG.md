@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Select the latest published release in the installation guide.
+
 ## 1.0.2 — 2026-11-25
 
 - Return the production deployment receipt through the public status endpoint so the Actions job can confirm activation.

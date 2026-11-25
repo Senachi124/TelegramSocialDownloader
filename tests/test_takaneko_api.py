@@ -197,6 +197,23 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(result['size'], 3)
             self.assertGreaterEqual(guard.call_count, 3)
 
+    def test_recover_published_media_before_receipt(self):
+        response = Mock(status=200)
+        response.getheader.side_effect = {'Content-Length': '3', 'Content-Type': 'image/jpeg'}.get
+        response.read.side_effect = [b'abc', b'', b'xyz', b'']
+        conn = Mock()
+        conn.getresponse.return_value = response
+        with tempfile.TemporaryDirectory() as directory, patch.object(api, '_public_connection', return_value=conn):
+            target = Path(directory) / 'photo.jpg'
+            target.write_bytes(b'abc')
+            inode = target.stat().st_ino
+            self.assertEqual(self.client().download(api.SITE + 'photo.jpg', target, Mock())['size'], 3)
+            with self.assertRaisesRegex(api.FanclubError, 'differs'):
+                self.client().download(api.SITE + 'photo.jpg', target, Mock())
+            self.assertEqual(target.read_bytes(), b'abc')
+            self.assertEqual(target.stat().st_ino, inode)
+            self.assertEqual(list(Path(directory).iterdir()), [target])
+
     def test_interrupted_original_is_preserved(self):
         response = Mock(status=200)
         response.getheader.side_effect = lambda key: {'Content-Type': 'image/jpeg'}.get(key)

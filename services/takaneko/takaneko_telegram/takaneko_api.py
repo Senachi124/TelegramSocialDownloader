@@ -10,8 +10,10 @@ videoId, image01, body01, image02, body02. Source HTML fields remain intact in
 Official article paths were verified in that site's legacy main.js and Nuxt
 CivcpQNb.js routes. No membership content was fetched for this verification.
 """
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import datetime
+import hashlib
 import http.client
 import html
 import ipaddress
@@ -21,6 +23,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import stat
 import time
 import uuid
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
@@ -135,6 +138,24 @@ def canonical_video_url(value):
         raise ValueError()
     except (ValueError, TypeError):
         raise FanclubError('Unsupported video URL') from None
+
+
+def _published_digest(target, guard, limit):
+    try:
+        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise FanclubError('Invalid existing media destination')
+        digest = hashlib.sha256()
+        while True:
+            guard()
+            chunk = stream.read(256 * 1024)
+            if not chunk:
+                return digest.digest()
+            digest.update(chunk)
 
 
 class Client:
@@ -445,6 +466,7 @@ class Client:
         target = Path(target)
         max_bytes=min(max_bytes or download_size.limits.MAX_DOWNLOAD_BYTES,download_size.limits.MAX_DOWNLOAD_BYTES)
         partial = target.with_name(target.name + '.' + uuid.uuid4().hex + '.part')
+        existing = _published_digest(target, guard, max_bytes)
         started = time.monotonic()
         for _ in range(6):
             url = media_url(url, self.media_hosts)
@@ -474,8 +496,10 @@ class Client:
                 if mime in ('text/html', 'application/json'):
                     raise FanclubError('Media returned a document instead of a file')
                 size = 0
-                # O_EXCL preserves any previous interrupted original for review.
-                with partial.open('xb') as stream:
+                # After a crash the file can exist before its size receipt. Verify the
+                # entire new response without accumulating another copy on every retry.
+                received = hashlib.sha256()
+                with (partial.open('xb') if existing is None else nullcontext(None)) as stream:
                     while True:
                         guard()
                         if time.monotonic() - started > 300:
@@ -487,17 +511,25 @@ class Client:
                         download_size.check(size)
                         if size > max_bytes:
                             raise FanclubError('Media exceeds size limit')
-                        stream.write(chunk)
-                    stream.flush()
-                    os.fsync(stream.fileno())
+                        received.update(chunk)
+                        if existing is None:
+                            stream.write(chunk)
+                    if existing is None:
+                        stream.flush()
+                        os.fsync(stream.fileno())
                 if not size or (length is not None and size != int(length)):
                     raise FanclubError('Incomplete media response')
                 guard()
-                if target.exists():
-                    raise FanclubError('Media destination already exists')
-                # Link is atomic and refuses to replace a concurrently published file.
-                os.link(partial, target)
-                partial.unlink()
+                if existing is None:
+                    try:
+                        os.link(partial, target)
+                    except FileExistsError:
+                        existing = _published_digest(target, guard, max_bytes)
+                        if existing is None or existing != received.digest():
+                            raise FanclubError('Media destination differs; inspect the saved copies')
+                    partial.unlink()
+                elif received.digest() != existing:
+                    raise FanclubError('Existing media differs from the complete response')
                 return {'path': str(target), 'size': size, 'mime': mime}
             except FanclubError:
                 raise

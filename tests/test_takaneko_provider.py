@@ -34,6 +34,57 @@ class ProducerIntegrationTests(unittest.TestCase):
                 attempt.assert_not_called()
             self.assertEqual(calls,[])
 
+    def test_unavailable_recipients_do_not_starve_the_next_page(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(state, 'CONTROL', Path(tmp)):
+            state.initialize()
+            for user in range(1, 23):
+                feed.set_subscription(user, True)
+            feed.record_inventory([])
+            feed.record_inventory([{'id': 'story'}])
+            with state.db() as db:
+                plan = json.dumps([{'kind': 'text', 'html': 'fixture'}])
+                db.execute('UPDATE tk_posts SET plan=?', (plan,))
+            def eligible(uid):
+                if uid == 1:
+                    raise ConnectionRefusedError()
+                return uid == 22
+            with patch.object(transport, 'allowed', side_effect=eligible), patch.object(
+                    transport, 'telegram', return_value={'message_id': 77}) as send:
+                feed.process_once()
+                feed.process_once()
+                feed.process_once()
+            send.assert_called_once()
+            self.assertEqual(send.call_args.args[1]['chat_id'], 22)
+            with state.db() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM tk_deliveries WHERE state='pending' AND retry_at>0").fetchone()[0], 21)
+                self.assertEqual(db.execute("SELECT count(*) FROM tk_parts WHERE state='sent'").fetchone()[0], 1)
+
+    def test_health_requires_database_and_broker_but_never_reads_credentials(self):
+        from takaneko_telegram import secrets
+        with tempfile.TemporaryDirectory() as root, patch.object(state, 'CONTROL', Path(root)):
+            state.initialize()
+            with patch.object(secrets, 'FILE') as private_file, patch.object(
+                    transport, 'secret', side_effect=lambda op: secrets.request(7, {'op': op}, None)):
+                self.assertEqual(transport.control(11, {'op': 'health'}, None), {'ok': True})
+                private_file.read_text.assert_not_called()
+            with patch.object(transport, 'secret', side_effect=ConnectionRefusedError), self.assertRaises(ConnectionRefusedError):
+                transport.control(11, {'op': 'health'}, None)
+
+    def test_links_health_works_while_delivery_is_drained(self):
+        from io import BytesIO
+        from unittest.mock import Mock
+        from takaneko_telegram import links
+        with tempfile.TemporaryDirectory() as root, patch.object(state, 'CONTROL', Path(root)), patch.object(
+                feed, 'deployment_guard', side_effect=AssertionError), patch.object(state, 'storage_guard') as guard:
+            state.initialize()
+            request = Mock(path='/healthz', wfile=BytesIO())
+            links.Handler.do_GET(request)
+            request.send_response.assert_called_once_with(200)
+            self.assertEqual(json.loads(request.wfile.getvalue()), {'status': 'ok'})
+            guard.side_effect = RuntimeError('mount unavailable')
+            links.Handler.do_GET(request)
+            request.send_error.assert_called_once_with(503)
+
     def test_live_link_requires_both_current_grants(self):
         import time
         with tempfile.TemporaryDirectory() as tmp, patch.object(state,'CONTROL', Path(tmp)), patch.object(state,'MEDIA',Path(tmp)):

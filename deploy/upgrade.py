@@ -16,6 +16,7 @@ import re
 import shutil
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -50,7 +51,7 @@ def config(filename):
     if any(values.get(key) for key in provider_keys) and not all(values.get(key) for key in (*provider_keys, 'push')):
         raise ValueError('Takaneko deployment registration is incomplete')
     paths = ['current','releases','data','backups','web_socket']
-    paths.extend(key for key in ('takaneko_data','takaneko_deploy_lock','takaneko_control_socket') if values.get(key))
+    paths.extend(key for key in ('takaneko_data','takaneko_deploy_lock','takaneko_control_socket','takaneko_links_socket','takaneko_broker_socket') if values.get(key))
     for field in paths:
         if not Path(values[field]).is_absolute() or '..' in Path(values[field]).parts:
             raise ValueError('Invalid path for ' + field)
@@ -178,18 +179,22 @@ db.close()
 '''
 
 
-def database(cfg,op,*args,output=None):
-    user=pwd.getpwnam(property_of(cfg['worker'],'User'))
+def service_identity(unit):
+    user=pwd.getpwnam(property_of(unit,'User'))
     if user.pw_uid==0:
         raise ValueError('The worker must run under a dedicated service user')
     def group_id(value):
         return int(value) if value.isdecimal() else grp.getgrnam(value).gr_gid
 
-    primary = property_of(cfg['worker'], 'Group')
-    groups = property_of(cfg['worker'], 'SupplementaryGroups').split()
+    primary = property_of(unit, 'Group')
+    groups = property_of(unit, 'SupplementaryGroups').split()
+    return dict(user=user.pw_uid, group=group_id(primary) if primary else user.pw_gid,
+                extra_groups=[group_id(name) for name in groups])
+
+
+def database(cfg,op,*args,output=None):
     result=spawn(['/usr/bin/python3','-I','-c',DB_PROGRAM,cfg['data'],op,*args],
-        user=user.pw_uid,group=group_id(primary) if primary else user.pw_gid,
-        extra_groups=[group_id(name) for name in groups],cwd='/',timeout=120,
+        **service_identity(cfg['worker']),cwd='/',timeout=120,
         stdout=output if output is not None else subprocess.PIPE)
     return result.stdout.decode().strip() if result.stdout is not None else None
 
@@ -224,13 +229,18 @@ def free_of_work(cfg):
 
 
 class UnixHTTP(http.client.HTTPConnection):
-    def __init__(self,path):
+    def __init__(self,path,peer_uid=None):
         super().__init__('localhost',timeout=3)
         self.path=path
+        self.peer_uid=peer_uid
     def connect(self):
         self.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
         self.sock.settimeout(self.timeout)
         self.sock.connect(self.path)
+        if self.peer_uid is not None:
+            peer = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
+            if struct.unpack('3i', peer)[1] != self.peer_uid:
+                raise PermissionError('Unexpected link server identity')
 
 
 def request_json(sock,path):
@@ -271,12 +281,67 @@ def provider_guard(cfg):
         yield
 
 
+# Use the installed client as the correct socket peer. Only boolean health or
+# membership flags cross the deployment boundary. Never request credentials.
+PROVIDER_PROBE = """
+import sys
+from media_bot.push_socket import exchange
+path, uid, mode = sys.argv[1:]
+request = {'op': 'subscribed', 'user_id': 1} if mode == 'membership' else {'op': 'health'}
+reply = exchange(path, int(uid), request, timeout=3)
+if mode == 'membership':
+    ok = reply.get('ok') is True and type(reply.get('enabled')) is bool
+elif mode == 'legacy-broker':
+    ok = reply == {'ok': False}
+else:
+    ok = reply == {'ok': True}
+raise SystemExit(0 if ok else 1)
+"""
+
+
+def provider_socket(cfg, key, unit, name):
+    if cfg.get(key):
+        return cfg[key]
+    directory = property_of(unit, 'RuntimeDirectory')
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+', directory) or directory in ('.', '..'):
+        raise ValueError('Register an explicit path for ' + key)
+    return str(Path('/run') / directory / name)
+
+
+def provider_probe(cfg, path, server, client, mode):
+    expected = pwd.getpwnam(property_of(server, 'User')).pw_uid
+    result = subprocess.run([str(Path(cfg['current'])/'.venv/bin/python'), '-IB', '-c', PROVIDER_PROBE,
+                             path, str(expected), mode], **service_identity(client), cwd='/', timeout=6,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
+
+
 def provider_ready(cfg):
-    if not cfg.get('takaneko_control_socket'):
+    if not cfg.get('takaneko_worker'):
         return True
-    info = Path(cfg['takaneko_control_socket']).lstat()
-    return (stat.S_ISSOCK(info.st_mode) and
-            info.st_uid == pwd.getpwnam(property_of(cfg['takaneko_worker'], 'User')).pw_uid)
+    manifest = json.loads((Path(cfg['current'])/MANIFEST).read_text())
+    legacy = manifest['version'] == '1.1.0'
+    worker = cfg['takaneko_worker']
+    control = provider_socket(cfg, 'takaneko_control_socket', worker, 'control.sock')
+    if not provider_probe(cfg, control, worker, cfg['web'], 'membership' if legacy else 'health'):
+        return False
+    if legacy:
+        # The first provider release supported neither readiness endpoint.
+        # An unknown broker operation confirms the request loop and peer without returning stored credentials.
+        broker = cfg['takaneko_broker']
+        path = provider_socket(cfg, 'takaneko_broker_socket', broker, 'broker.sock')
+        if not provider_probe(cfg, path, broker, worker, 'legacy-broker'):
+            return False
+    links = cfg['takaneko_links']
+    path = provider_socket(cfg, 'takaneko_links_socket', links, 'web.sock')
+    owner = pwd.getpwnam(property_of(links, 'User')).pw_uid
+    with contextlib.closing(UnixHTTP(path, owner)) as connection:
+        connection.request('GET', '/healthz')
+        reply = connection.getresponse()
+        if legacy:
+            # Legacy links reject the unknown route and return 503 during a drain.
+            return reply.status in (404, 503)
+        return reply.status == 200 and json.loads(reply.read(8192)) == {'status': 'ok'}
 
 
 def check(cfg):
@@ -291,7 +356,7 @@ def check(cfg):
                     (not cfg.get('broker_socket') or
                      'token_set' in request_json(cfg['broker_socket'],'/status'))):
                 return
-        except (OSError,RuntimeError,ValueError,http.client.HTTPException):
+        except (OSError,RuntimeError,ValueError,subprocess.SubprocessError,http.client.HTTPException):
             pass
         time.sleep(1)
     raise RuntimeError('Service readiness check failed')
@@ -318,24 +383,39 @@ def restore(cfg,journal):
         systemctl('start',cfg['refresh_timer'])
 
 
-def upgrade(cfg,wheel,tag,sha):
+@contextlib.contextmanager
+def locked_config(filename):
+    # Only the lock location is needed before locking. Registration and unit
+    # changes from an installer/adoption are read after it releases the lock.
+    path = Path(filename)
+    trusted(path)
+    backups = Path(json.loads(path.read_text())['backups'])
+    if not backups.is_absolute() or '..' in backups.parts:
+        raise ValueError('Invalid rollback directory')
+    trusted(backups)
+    if backups.stat().st_mode & 0o077:
+        raise ValueError('Rollback directory must be root-only')
+    with (backups/'upgrade.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        cfg = config(path)
+        if Path(cfg['backups']) != backups:
+            raise RuntimeError('Rollback directory changed during registration')
+        yield cfg
+
+
+def upgrade(filename,wheel,tag,sha):
     if not re.fullmatch(r'[a-f0-9]{40}',sha):
         raise ValueError('Invalid release commit')
     trusted(wheel)
     wheel_digest=wheel_info(wheel,tag)
-    current=Path(cfg['current'])
-    root=Path(cfg['releases'])
-    backups=Path(cfg['backups'])
-    trusted(root)
-    trusted(current.parent)
-    trusted(backups)
-    if backups.stat().st_mode & 0o077:
-        raise ValueError('Rollback directory must be root-only')
-    if not current.is_symlink() or current.resolve().parent!=root:
-        raise ValueError('Active release is outside release root')
-    guard=backups/'upgrade.lock'
-    with guard.open('a') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    with locked_config(filename) as cfg:
+        current=Path(cfg['current'])
+        root=Path(cfg['releases'])
+        backups=Path(cfg['backups'])
+        trusted(root)
+        trusted(current.parent)
+        if not current.is_symlink() or current.resolve().parent!=root:
+            raise ValueError('Active release is outside release root')
         journal_file=backups/'upgrade-in-progress.json'
         if journal_file.exists():
             with provider_guard(cfg):
@@ -413,7 +493,7 @@ def main():
     args=parser.parse_args()
     if os.getuid()!=0:
         parser.error('The local upgrade controller requires root')
-    upgrade(config(args.config),Path(args.wheel).resolve(strict=True),args.tag,args.sha)
+    upgrade(args.config,Path(args.wheel).resolve(strict=True),args.tag,args.sha)
 
 
 if __name__=='__main__':

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.1 — 2026-11-25
+
+- Verify the selected media volume and provider services during setup and release upgrades.
+- Continue dispatching to eligible subscribers when other recipients lose access or cannot be checked.
+- Recover a completed Fanclub attachment after an interrupted receipt write and preserve a differing local file for review.
+
 ## 1.1.0 — 2026-11-25
 
 - Include a dedicated Fanclub credential broker in the release wheel. Database checkpoints use the configured service identity and groups.

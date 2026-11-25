@@ -67,7 +67,9 @@ class UpgradeTests(unittest.TestCase):
         if op=='snapshot':output.write(b'fixture')
 
     def run_upgrade(self):
-        upgrade.upgrade(self.config,self.wheel,self.tag,self.sha)
+        filename = Path(self.temp.name)/'config.json'
+        filename.write_text(json.dumps(self.config))
+        upgrade.upgrade(filename,self.wheel,self.tag,self.sha)
 
     def test_install_pauses_admission_and_idempotent_retry_preserves_running_release(self):
         self.run_upgrade()
@@ -117,6 +119,47 @@ class UpgradeTests(unittest.TestCase):
         self.control.assert_not_called()
         self.assertFalse(self.phase)
         self.assertFalse((self.backup/'upgrade-in-progress.json').exists())
+
+    def test_locked_config_reads_registration_under_the_same_lock(self):
+        filename = Path(self.temp.name)/'config.json'
+        filename.write_text(json.dumps(self.config))
+        original = upgrade.config
+        def read_while_locked(path):
+            with (self.backup/'upgrade.lock').open('a') as concurrent:
+                with self.assertRaises(BlockingIOError):
+                    upgrade.fcntl.flock(concurrent, upgrade.fcntl.LOCK_EX | upgrade.fcntl.LOCK_NB)
+            return original(path)
+        with patch.object(upgrade, 'config', side_effect=read_while_locked):
+            with upgrade.locked_config(filename) as cfg:
+                self.assertEqual(cfg, self.config)
+
+    def test_updated_provider_requires_positive_control_and_links_responses(self):
+        self.register_provider()
+        self.config.update(takaneko_control_socket='/run/provider/control.sock',
+                           takaneko_links_socket='/run/provider-links/web.sock',
+                           takaneko_broker_socket='/run/broker/secret.sock')
+        with patch.object(upgrade, 'provider_probe', return_value=True) as probe, patch.object(
+                upgrade, 'property_of', return_value='root'), patch.object(upgrade, 'UnixHTTP') as http:
+            reply = http.return_value.getresponse.return_value
+            (self.old/upgrade.MANIFEST).write_text('{"version":"1.1.1"}')
+            reply.status = 404
+            self.assertFalse(upgrade.provider_ready(self.config))
+            probe.assert_called_once_with(self.config, self.config['takaneko_control_socket'],
+                                         'provider.service', 'web.service', 'health')
+            reply.status = 200
+            reply.read.return_value = b'{"status":"ok"}'
+            self.assertTrue(upgrade.provider_ready(self.config))
+            probe.return_value = False
+            self.assertFalse(upgrade.provider_ready(self.config))
+            probe.return_value = True
+            # Existing v1.1.0 providers return a guarded 503 on unknown link routes.
+            (self.old/upgrade.MANIFEST).write_text('{"version":"1.1.0"}')
+            reply.status = 503
+            self.assertTrue(upgrade.provider_ready(self.config))
+            probe.assert_any_call(self.config, self.config['takaneko_control_socket'],
+                                  'provider.service', 'web.service', 'membership')
+            probe.assert_any_call(self.config, self.config['takaneko_broker_socket'],
+                                  'secrets.service', 'provider.service', 'legacy-broker')
 
     def test_wrong_tag_and_distribution_metadata_rejected(self):
         with self.assertRaises(ValueError):

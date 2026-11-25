@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Add the bundled Takaneko provider to a standalone systemd installation."""
 import argparse
-import fcntl
 import grp
 import json
 import os
@@ -87,11 +86,21 @@ def storage_identity(path):
     upgrade.trusted(path)
     if not path.is_dir() or not re.fullmatch(r'/[A-Za-z0-9_./-]*', str(path)) or '..' in path.parts:
         raise ValueError('Expected an absolute root-owned storage directory without spaces')
-    mounts = json.loads(subprocess.check_output(
-        ['findmnt', '--json', '--target', str(path), '--output', 'TARGET,UUID,FSROOT'], text=True))
-    mount, = mounts['filesystems']
+    def mounted_at(target):
+        output = subprocess.check_output(
+            ['findmnt', '--json', '--target', str(target), '--output', 'TARGET,UUID,FSROOT,MAJ:MIN'],
+            text=True)
+        mount, = json.loads(output)['filesystems']
+        if Path(mount['target']) != target:
+            raise ValueError('Takaneko storage must be an active mount point')
+        return mount
+
+    mount = mounted_at(path)
+    root = mounted_at(Path('/'))
     if not re.fullmatch(r'[A-Za-z0-9-]+', mount['uuid'] or ''):
         raise ValueError('The selected filesystem must have a stable UUID')
+    if mount['maj:min'] == root['maj:min'] or mount['uuid'] == root['uuid']:
+        raise ValueError('Takaneko storage must be on a filesystem separate from /')
     if shutil.disk_usage(path).free < 5 * 1024**3:
         raise ValueError('Takaneko media storage requires at least 5 GiB free')
     fsroot = Path(mount['fsroot']) / path.relative_to(mount['target'])
@@ -147,7 +156,8 @@ def install(storage, url, cfg):
         install_file(UNITS/name, template.replace('@MEDIA@', str(media)).replace('@TMP@', str(tmp)), 0o644)
     push = 'telegram-social-push.service'
     registration = dict(**PROVIDER_UNITS, takaneko_control_socket=SOCKET, takaneko_data=str(CONTROL),
-                        takaneko_deploy_lock=str(lock), push=push)
+                        takaneko_deploy_lock=str(lock), takaneko_links_socket=provider_env['TAKANEKO_LINK_SOCKET'],
+                        takaneko_broker_socket=provider_env['TAKANEKO_SECRET_SOCKET'], push=push)
     for key, value in registration.items():
         if cfg.get(key) not in (None, value):
             raise ValueError('Existing deployment configuration differs at ' + key)
@@ -190,17 +200,13 @@ def install(storage, url, cfg):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--storage', required=True, type=Path, help='Existing mounted directory for media and temporary files')
+    parser.add_argument('--storage', required=True, type=Path, help='Active mount point on a separate filesystem for media and temporary files')
     parser.add_argument('--link-base', required=True, help='Public HTTPS prefix routed to the Takaneko link socket')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Run as root')
-    cfg = upgrade.config(upgrade.CONFIG)
-    backups = Path(cfg['backups'])
-    upgrade.trusted(backups)
-    with (backups/'upgrade.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if (backups/'upgrade-in-progress.json').exists():
+    with upgrade.locked_config(upgrade.CONFIG) as cfg:
+        if (Path(cfg['backups'])/'upgrade-in-progress.json').exists():
             parser.error('Complete or recover the current application upgrade first')
         install(args.storage, args.link_base, cfg)
     print('Takaneko is available under Subscriptions in the web console.')

@@ -24,7 +24,12 @@ def file_limit():
 
 
 def allowed(user_id):
-    return _call({'op': 'allowed', 'user_id': user_id}).get('ok') is True
+    result = _call({'op': 'allowed', 'user_id': user_id})
+    if result.get('ok') is True:
+        return True
+    if result.get('code') == 403:
+        return False
+    raise RuntimeError('Push transport unavailable')
 
 
 def telegram(method, data, files=None):
@@ -82,6 +87,11 @@ def control(uid, request, fd):
     if fd is not None:
         return {'ok': False}
     op = request.get('op')
+    if op == 'health':
+        with c.db() as db:
+            db.execute('SELECT 1 FROM tk_subscriptions LIMIT 0')
+        secret('health')
+        return {'ok': True}
     if op == 'set_session':
         secret('set_session', {'session': request.get('session')})
         return {'ok': True}

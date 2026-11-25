@@ -39,6 +39,8 @@ def session_digest(session):
 def request(uid, req, fd):
     if fd is not None:
         return {'ok': False}
+    if req.get('op') == 'health':
+        return {'ok': True}
     with _lock:
         try:
             value = json.loads(FILE.read_text())

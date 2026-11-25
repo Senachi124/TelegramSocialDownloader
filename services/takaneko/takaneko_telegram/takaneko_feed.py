@@ -376,7 +376,17 @@ def deliver(delivery,send=None):
     send=send or telegram
     if not enabled_for(delivery):return
     # Probe producer and Bot access before checkpointing a send attempt.
-    if send is telegram and not transport.allowed(delivery['user_id']):return
+    if send is telegram:
+        try:
+            retry_delay = 0 if transport.allowed(delivery['user_id']) else 300
+        except (OSError, ValueError, RuntimeError):
+            retry_delay = 30
+        if retry_delay:
+            with c.db() as db:
+                db.execute('''UPDATE tk_deliveries SET retry_at=?
+                              WHERE id=? AND state IN ('pending','ready')''',
+                           (time.time() + retry_delay, delivery['id']))
+            return
     with c.db() as db:
         db.execute('BEGIN IMMEDIATE')
         row=db.execute('SELECT state FROM tk_deliveries WHERE id=?',(delivery['id'],)).fetchone()
@@ -488,7 +498,7 @@ def process_once():
         # older article must not hold later ready articles for the same user.
         rows=[dict(r) for r in db.execute("""SELECT d.* FROM tk_deliveries d JOIN tk_posts p ON p.id=d.post_id
           WHERE d.state IN ('pending','ready') AND p.plan IS NOT NULL AND d.retry_at<=?
-          ORDER BY d.id LIMIT 20""",(time.time(),))]
+          ORDER BY d.retry_at,d.id LIMIT 20""",(time.time(),))]
     for row in rows:
         if time.time()<max(_telegram_cooldown,c.get_setting('takaneko_telegram_cooldown',0)):break
         deliver(row)

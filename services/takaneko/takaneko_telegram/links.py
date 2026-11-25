@@ -17,6 +17,21 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path == '/healthz':
+            try:
+                feed.c.storage_guard()
+                with feed.c.db() as db:
+                    db.execute('SELECT 1 FROM tk_links LIMIT 0')
+            except Exception:
+                self.send_error(503)
+                return
+            body = b'{"status":"ok"}'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         with feed.deployment_guard() as available:
             if not available:
                 self.send_error(503)

@@ -5,7 +5,7 @@ Each installation can poll the Fanclub using its operator's account and push new
 ## Enable the provider
 
 1. Complete the [standalone Linux installation](deployment.md), configure the Bot token, and start the Bot worker, broker and web console. Use the checkout for the release installed on the host.
-2. Choose the mounted filesystem for Fanclub media and temporary downloads. Provide an existing root-owned directory with traversable parent directories, a stable filesystem UUID and at least 5 GiB free. Pick the HTTPS download prefix on your reverse proxy.
+2. Choose the mounted filesystem for Fanclub media and temporary downloads. Pass the exact root-owned mount point of a filesystem separate from the system root. A bind mount of a directory on that separate filesystem also works. The mount needs a stable filesystem UUID, traversable parent directories and at least 5 GiB free. Pick the HTTPS download prefix on your reverse proxy.
 3. Run the provider installer with those two values. The following example uses a volume mounted at `/srv/media`.
 
    ```sh
@@ -69,3 +69,5 @@ sudo systemd-run --quiet --wait --pipe --collect \
 Substitute `retry ID` for `pending` to retry a definite rejection. For an uncertain send, first check the actual Telegram result and use `resolve ID sent` or `resolve ID retry`. The provider checkpoints an attempted send before contacting Telegram so a restart does not silently duplicate it.
 
 The provider's settings and SQLite delivery state live in `/var/lib/telegram-social-takaneko`; credentials live in the root-only `/var/lib/telegram-takaneko-credentials`. Its unit environment is `/etc/telegram-social-takaneko/.env`. The selected volume contains `telegram-social-takaneko/media` and `telegram-social-takaneko/tmp`. Include these locations in your host backup. During GitHub Actions upgrades the controller drains active provider work, checkpoints the provider and Bot databases, and switches all components to the same release. Pending work resumes from the service-owned database.
+
+When upgrading an existing v1.1.0 installation, refresh the host deployment controller from the verified v1.1.1 checkout. Use the connection command in [Connect GitHub Actions](deployment.md#connect-github-actions) with your existing repository, branch and status URL. Do this before requesting the deployment. The controller checks both the installed v1.1.0 services and the new version after activation. For later releases that change the host controller, repeat this step with that release's checkout.

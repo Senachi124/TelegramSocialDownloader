@@ -46,7 +46,7 @@ def select(requests, previous, since):
             return item
 
 
-def deploy(config, host, request, api):
+def deploy(host, request, api):
     sha=request['sha']
     payload=request['payload']
     tag=payload['tag']
@@ -84,7 +84,6 @@ def deploy(config, host, request, api):
 
 def main():
     host=json.loads((CONTROL/'actions.json').read_text())
-    config=json.loads((CONTROL/'config.json').read_text())
     def api(path):
         return json.loads(fetch('https://api.github.com/repos/'+host['repository']+'/'+path,4*1024*1024))
     receipt=STATE/'status.json'
@@ -97,7 +96,7 @@ def main():
         return
     write_status(item['id'],item['sha'],'running')
     try:
-        deploy(config,host,item,api)
+        deploy(host,item,api)
     except Exception:
         write_status(item['id'],item['sha'],'failure')
         raise

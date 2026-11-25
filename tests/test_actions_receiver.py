@@ -22,7 +22,7 @@ class ReceiverTests(unittest.TestCase):
         req=dict(sha='a'*40,payload={'tag':'v2.0.0','run_id':'19'})
         run={'path':'.github/workflows/other.yml'}
         with self.assertRaisesRegex(ValueError,'identity'), patch.object(receiver,'fetch',side_effect=AssertionError):
-            receiver.deploy({}, {'repository':'example/app','branch':'main'}, req,lambda _:run)
+            receiver.deploy({'repository':'example/app','branch':'main'}, req,lambda _:run)
 
     def test_status_contains_only_public_receipt(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(receiver,'STATE',Path(tmp)):

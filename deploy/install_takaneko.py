@@ -209,7 +209,7 @@ def main():
         if (Path(cfg['backups'])/'upgrade-in-progress.json').exists():
             parser.error('Complete or recover the current application upgrade first')
         install(args.storage, args.link_base, cfg)
-    print('Takaneko is available under Subscriptions in the web console.')
+    print('Takaneko is available under Takaneko subscriptions in the web console.')
 
 
 if __name__ == '__main__':

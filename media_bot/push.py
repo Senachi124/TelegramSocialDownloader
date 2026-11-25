@@ -158,8 +158,11 @@ def web_panel(hidden):
         provider = hidden + layout.hidden_field('provider', slug)
         if slug == 'takaneko' and 'set_session' in listing.get('capabilities', []):
             section += '<h3>Fanclub session</h3>'
-            controls = layout.field('session', 'Session or browser cookies (JSON)', 'password',
-                                    attrs='required autocomplete="new-password" spellcheck="false"')
+            controls = layout.field('session', 'Fanclub login (JSON)', 'password',
+                                    attrs='required autocomplete="new-password" spellcheck="false" aria-describedby="fanclub-login-help"')
+            controls += ('<p id="fanclub-login-help" class="muted">For automatic renewal, paste '
+                         '<code>{"refreshToken":"…"}</code> or a browser cookie array that can renew the Fanclub login. '
+                         'An <code>accessToken</code> on its own works until it expires. Saving replaces the current login.</p>')
             controls += layout.button('Save Fanclub session', 'set_session')
             section += layout.form('subscriptions', provider, controls)
             section += f'<p>Enable or pause Fanclub updates in <a href="{core.BASE}features#takaneko">Features</a>.</p>'

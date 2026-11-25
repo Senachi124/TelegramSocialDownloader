@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Rename the admin page to **Takaneko subscriptions** and explain which Fanclub login formats support automatic renewal.
 - Redesign the web console for desktop and mobile. Connection settings save independently, access and subscription rows show available actions, and credential edits return to the selected pool.
 - Allow operators to test a development build on a selected installation by manually deploying its verified CI artifact and commit SHA.
 

@@ -92,6 +92,9 @@ class WebServiceTests(unittest.TestCase):
         provider.assert_called_once_with(entry, 'set_session', session={'accessToken': 'sample-secret'})
         status, body, _ = self.request('subscriptions', cookie=cookie)
         self.assertEqual(status, 200)
+        self.assertIn('<h1>Takaneko subscriptions</h1>', body)
+        self.assertIn('aria-current="page">Takaneko subscriptions</a>', body)
+        self.assertIn('aria-describedby="fanclub-login-help"', body)
         self.assertIn('Save Fanclub session', body)
         self.assertNotIn('sample-secret', body)
 
@@ -217,7 +220,7 @@ class WebServiceTests(unittest.TestCase):
         control.return_value = {'ok': True, 'enabled': False, 'session_configured': False}
         status, body, _ = self.request('features', cookie=cookie)
         self.assertEqual(status, 200)
-        self.assertIn('Add a Fanclub session in Subscriptions', body)
+        self.assertIn('Add a Fanclub session in Takaneko subscriptions', body)
         self.assertNotIn('aria-label="Enable Takaneko Fanclub"', body)
         control.assert_called_once_with(entry, 'feature_status')
         control.return_value['session_configured'] = True

@@ -20,7 +20,7 @@ Download media in Telegram and receive subscriptions from connected services. Th
 | --- | --- |
 | Features | Enable or pause Instagram, TikTok, X, Threads and YouTube downloads independently. Switch Telegram translation and OCR on or off, and control the installed Takaneko provider. |
 | Users and groups | Review requests, approve or revoke users, set the access policy and manage registered groups. The configured owner has additional Telegram controls. |
-| Subscriptions | Connect your Takaneko Fanclub session, subscribe or unsubscribe approved users, and see provider health. Each provider owns its subscriber list and delivery progress. |
+| Takaneko subscriptions | Connect your Takaneko Fanclub session, subscribe or unsubscribe approved users, and see provider health. Each provider owns its subscriber list and delivery progress. |
 | Account pools | Import or update platform cookies, enable or disable an account, select a primary account or rotation policy, and test an account against a supplied post. |
 | API credentials | Set up the Telegram Local Bot API and add, rotate or disable translation API keys. |
 | Bot connection | Add or replace the bot token, check the connection, enable polling, set media limits and manage owner failure alerts. Each form saves its own settings. |
@@ -88,7 +88,7 @@ Put media and temporary files on the same filesystem under `MEDIA_BOT_DATA`. The
 
 ### Takaneko Fanclub
 
-Takaneko is optional. For a bot that only downloads media, you can skip the provider installation and Fanclub credentials. To send Fanclub updates, install the bundled provider, save your session in **Subscriptions → takaneko** and choose **Enable** beside **Takaneko Fanclub** in **Features**. Subscribe approved Telegram users in **Subscriptions**. The first successful poll records a baseline. Subsequent posts go to eligible subscribers. See the [Takaneko setup guide](docs/takaneko.md).
+Takaneko is optional. For a bot that only downloads media, you can skip the provider installation and Fanclub credentials. To send Fanclub updates, install the bundled provider, save your session in **Takaneko subscriptions** and choose **Enable** beside **Takaneko Fanclub** in **Features**. Subscribe approved Telegram users in **Takaneko subscriptions**. The first successful poll records a baseline. Subsequent posts go to eligible subscribers. See the [Takaneko setup guide](docs/takaneko.md).
 
 ### Source layout
 

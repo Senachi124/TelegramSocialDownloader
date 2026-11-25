@@ -8,7 +8,7 @@ from .. import accounts, core as c, pool_checks
 
 STYLE = files(__package__).joinpath('console.css').read_text(encoding='utf-8')
 PAGES = {'': 'Bot connection', 'features': 'Features', 'users': 'Users & groups',
-         'subscriptions': 'Subscriptions', 'accounts': 'Account pools', 'keys': 'API credentials'}
+         'subscriptions': 'Takaneko subscriptions', 'accounts': 'Account pools', 'keys': 'API credentials'}
 
 
 def page(title, body, *, signed_in=False, route=None, session_fields='', notice=''):

@@ -27,11 +27,19 @@ Each installation can poll the Fanclub using its operator's account and push new
 
 ## Connect a Fanclub account
 
-Sign in to the Bot web console. Open **Subscriptions → takaneko**, enter the Fanclub session and choose **Save Fanclub session**. You can supply a browser-exported JSON array containing the cookies valid for the Fanclub API, or a JSON object with an `accessToken`, `refreshToken` or `cookies` array. The credential broker stores the operator's session and handles refresh-token rotation. The web console does not display stored values.
+Sign in to the bot web console and open **Takaneko subscriptions**. Paste one of the following into **Fanclub login (JSON)** and choose **Save Fanclub session**.
 
-In **Users & groups**, approve each Telegram user who should receive updates. In **Subscriptions**, choose **Subscribe** next to that user. Open **Features** and choose **Enable** beside **Takaneko Fanclub** to start polling and delivery. A new installation starts paused. You can leave it paused without adding a session. The first complete poll establishes the starting inventory. Subsequent polls normally run every five minutes and enqueue newly discovered posts for current subscribers. Delivery rechecks both Bot access and the subscription.
+| What you have | What to paste | How it works |
+| --- | --- | --- |
+| Refresh token | `{"refreshToken":"<your refresh token>"}` | The provider requests an access token and saves a replacement refresh token when the Fanclub issues one. This is the preferred option for ongoing subscriptions. |
+| Browser cookies | A browser-exported JSON cookie array, or `{"cookies":[…]}` with that array | Cookies alone work if the Fanclub accepts them at its API refresh endpoint. An export containing only preferences or analytics cookies cannot renew a login. |
+| Access token (JWT) only | `{"accessToken":"<your access token>"}` | The provider can use this token until it expires. You then need to import fresh login data. |
 
-Choose **Pause** in **Features** to suspend polling and delivery while keeping the Fanclub session, subscriptions and pending deliveries. Choose **Enable** to resume. To remove one recipient, choose **Unsubscribe** in **Subscriptions**. This cancels eligible outstanding deliveries and revokes the user's download links.
+If your refresh token is stored in browser local storage, a cookie export will omit it. Saving replaces the stored Fanclub login. The form checks the input format; the provider uses it against the Fanclub when polling is enabled.
+
+In **Users & groups**, approve each Telegram user who should receive updates. In **Takaneko subscriptions**, choose **Subscribe** next to that user. Open **Features** and choose **Enable** beside **Takaneko Fanclub** to start polling and delivery. A new installation starts paused. You can leave it paused without adding a session. The first complete poll establishes the starting inventory. Subsequent polls normally run every five minutes and enqueue newly discovered posts for current subscribers. Delivery rechecks both Bot access and the subscription.
+
+Choose **Pause** in **Features** to suspend polling and delivery while keeping the Fanclub session, subscriptions and pending deliveries. Choose **Enable** to resume. To remove one recipient, choose **Unsubscribe** in **Takaneko subscriptions**. This cancels eligible outstanding deliveries and revokes the user's download links.
 
 The provider sends original text by default. To enable translation, import the full provider credential object using a private JSON file. An example schema is shown below. Use your own session and key. An import replaces the provider credentials, including the active Fanclub session and translation-key list.
 

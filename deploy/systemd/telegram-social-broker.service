@@ -1,0 +1,29 @@
+[Unit]
+Description=Telegram Social Downloader broker
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/var/lib/telegram-social-downloader
+
+[Service]
+User=telegram-credentials
+Group=telegram-social
+RuntimeDirectory=telegram-social-broker
+RuntimeDirectoryMode=0750
+WorkingDirectory=/opt/telegram-social-downloader/current
+EnvironmentFile=/etc/telegram-social-downloader/.env
+Environment=TMPDIR=/var/lib/telegram-social-downloader/tmp/broker
+ExecStart=/opt/telegram-social-downloader/current/.venv/bin/python -m media_bot broker
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=90s
+KillMode=control-group
+UMask=0077
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+LimitCORE=0
+ReadWritePaths=/var/lib/telegram-social-credentials
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,59 @@
+name: Deploy to production
+on:
+  workflow_run:
+    workflows: [Test and release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag
+        required: true
+        type: string
+
+permissions: {}
+concurrency:
+  group: telegram-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      vars.ENABLE_PRODUCTION_DEPLOY == 'true' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v') &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: production
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - name: Request release and verify installation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+          STATUS_URL: ${{ secrets.DEPLOY_STATUS_URL }}
+        run: |
+          set -eu
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$STATUS_URL" == https://* ]]
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          id=$(jq -n --arg sha "$sha" --arg tag "$TAG" --arg run "$GITHUB_RUN_ID" \
+            '{ref:$sha,task:"telegram-upgrade",environment:"telegram-app",auto_merge:false,required_contexts:[],payload:{tag:$tag,run_id:$run}}' |
+            gh api "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          final=failure
+          trap 'gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state="$final" --silent' EXIT
+          echo "Requested $TAG ($sha), deployment $id"
+          for i in $(seq 1 135); do
+            if reply=$(curl -fsS --max-time 8 --proto '=https' "$STATUS_URL?deployment=$id" 2>/dev/null); then
+              state=$(jq -r --arg id "$id" --arg sha "$sha" 'select((.deployment|tostring)==$id and .sha==$sha) | .state' <<< "$reply" 2>/dev/null || true)
+              if [[ "$state" == success ]]; then final=success; echo "Production verified $TAG"; exit 0; fi
+              if [[ "$state" == failure ]]; then echo 'Host reported a deployment failure'; exit 1; fi
+            fi
+            sleep 10
+          done
+          echo 'Timed out waiting for the host receipt'; exit 1

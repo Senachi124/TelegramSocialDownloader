@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.1 — 2026-11-25
+
+- Install the standalone Linux service and deploy tested releases from the production workflow.
+
 ## 1.0.0 — 2026-11-25
 
 - Download social media from Telegram, select delivery preferences and receive direct files or expiring links.

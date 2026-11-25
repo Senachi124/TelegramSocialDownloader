@@ -45,6 +45,10 @@ flowchart TD
     Q --> R[Provider checkpoints delivery]
 ```
 
+## Deploy on Linux
+
+Install on your own server, then enable **Deploy to production** in your fork to install published releases automatically or select a release from Actions. See the [deployment guide](docs/deployment.md).
+
 ## Install
 
 Use Linux, Python 3.11 or later, and FFmpeg with ffprobe. Install Deno on the worker’s PATH for YouTube extraction. Use a dedicated operating system account. The example runs the bot components under that account.

@@ -1,0 +1,6 @@
+{
+  "version": "1.0.1",
+  "changes": [
+    "管理員可從 GitHub Actions 部署已發布的版本，並查看部署結果。"
+  ]
+}

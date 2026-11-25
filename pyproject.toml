@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-social-downloader"
-version = "1.0.0"
+version = "1.0.1"
 description = "Telegram media downloads, subscription delivery and web administration"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,3 +19,6 @@ packages = ["media_bot"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.package-data]
+media_bot = ["release_notice.json"]

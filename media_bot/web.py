@@ -118,6 +118,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not path.path.startswith(c.BASE):
                 return self.respond(404,'Not found')
             route = path.path[len(c.BASE):]
+            if route=='deployment-status':
+                receipt = Path('/var/lib/telegram-social-deploy/status.json')
+                if not receipt.is_file():
+                    return self.respond(404,'No deployment receipt')
+                state = json.loads(receipt.read_text())
+                return self.respond(200,json.dumps({key: state[key] for key in ('deployment','sha','state')}),mime='application/json')
             if route=='healthz':
                 return self.respond(200,'{"status":"ok"}',mime='application/json')
             if route=='login':

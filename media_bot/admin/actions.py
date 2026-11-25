@@ -48,6 +48,8 @@ ACTIONS = {
 def destination(route, form):
     action = (route or '').split('/', 1)[0]
     page, anchor, _ = ACTIONS.get(action, ('', '', ''))
+    if route == 'fanclub-test':
+        return 'subscriptions#fanclub-connection'
     if action in ('account', 'pool-check'):
         platform = route.removeprefix('pool-check/') if action == 'pool-check' else form.get('platform')
         if platform in accounts.PLATFORMS:

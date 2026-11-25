@@ -98,9 +98,10 @@ def telegram(method, data, files=None):
 
 
 def secret(operation, fields=None):
+    timeout = 1 if operation in ('get_session', 'check_session') else 3 if operation == 'session_status' else 15
     result = exchange(os.getenv('TAKANEKO_SECRET_SOCKET', '/run/telegram-takaneko-broker/broker.sock'),
                       pwd.getpwnam(os.getenv('TAKANEKO_BROKER_USER', 'root')).pw_uid,
-                      dict(op=operation, **(fields or {})), timeout=3 if operation == 'session_status' else 15)
+                      dict(op=operation, **(fields or {})), timeout=timeout)
     if result.get('ok') is not True:
         raise RuntimeError('Producer credentials unavailable')
     return result
@@ -181,6 +182,8 @@ def control(uid, request, fd):
         return {'ok': True}
     if op == 'feature_status':
         return feature_control()
+    if op == 'test_session' and request.keys() == {'op'}:
+        return {'ok': True, 'result': feed.test_session()}
     if op == 'set_enabled':
         if type(request.get('enabled')) is not bool:
             return {'ok': False}
@@ -191,7 +194,7 @@ def control(uid, request, fd):
     if op == 'list':
         with c.db() as db:
             users = [row[0] for row in db.execute('SELECT user_id FROM tk_subscriptions WHERE enabled=1')]
-        return {'ok': True, 'users': users, 'capabilities': ['set_session', 'set_enabled']}
+        return {'ok': True, 'users': users, 'capabilities': ['set_session', 'set_enabled', 'test_session']}
     user_id = request.get('user_id')
     if type(user_id) is not int or not 0 < user_id < 2**63:
         return {'ok': False}

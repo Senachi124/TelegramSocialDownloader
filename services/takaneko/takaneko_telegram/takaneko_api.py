@@ -47,6 +47,14 @@ class FanclubError(RuntimeError):
         self.status = status
 
 
+class FanclubConnectionError(FanclubError):
+    pass
+
+
+class FanclubLoginRejected(FanclubError):
+    pass
+
+
 class FanclubHTTPError(FanclubError):
     """An upstream HTTP failure carrying a content-free diagnostic."""
 
@@ -173,10 +181,11 @@ def _published_digest(target, guard, limit):
 
 
 class Client:
-    def __init__(self, session_dict, *, media_hosts=()):
+    def __init__(self, session_dict, *, media_hosts=(), api_timeout=30):
         if not isinstance(session_dict, dict):
             raise FanclubError('Fanclub login is not configured')
         self._session = deepcopy(session_dict)
+        self._api_timeout = api_timeout
         self.media_hosts = MEDIA_HOSTS | frozenset(media_hosts)
         self._token = None
         self._until = 0
@@ -227,6 +236,7 @@ class Client:
         conn = None
         try:
             conn = _public_connection(API_HOST)
+            conn.timeout = self._api_timeout
             conn.request('POST' if body is not None else 'GET', path, body=payload, headers=headers)
             response = conn.getresponse()
             if response.status != 200:
@@ -234,16 +244,21 @@ class Client:
             raw = response.read(MAX_JSON + 1)
             if len(raw) > MAX_JSON:
                 raise FanclubError('Fanclub response exceeds limit')
-            return json.loads(raw)
+            try:
+                return json.loads(raw)
+            except (ValueError, RecursionError):
+                raise FanclubError('Invalid Fanclub response') from None
         except FanclubError:
             raise
+        except (OSError, http.client.HTTPException):
+            raise FanclubConnectionError('Fanclub request failed') from None
         except Exception:
             raise FanclubError('Fanclub request failed') from None
         finally:
             if conn:
                 conn.close()
 
-    def _authenticate(self):
+    def _authenticate(self, *, allow_fallback=True):
         if self._token and time.monotonic() < self._until:
             return self._token
         refresh = self._session.get('refreshToken')
@@ -256,6 +271,8 @@ class Client:
                 # Match the original import behavior only for a definitive invalid
                 # refresh; a rate limit/network failure must not trigger more calls.
                 fallback = self._session.get('accessToken')
+                if error.status == 400 and not allow_fallback:
+                    raise FanclubLoginRejected('Fanclub refused the login refresh') from None
                 if error.status != 400 or not isinstance(fallback, str) or not fallback:
                     raise
                 self._request('/auth/notifications/count', token=fallback)
@@ -282,14 +299,33 @@ class Client:
     def _get(self, path):
         return self._request(path, token=self._authenticate())
 
-    def _count(self):
-        result = self._get('/auth/notifications/count')
+    @staticmethod
+    def _validated_count(result):
         if not isinstance(result, dict):
             raise FanclubError('Invalid notification count')
         count = result.get('count', result.get('total'))
         if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= MAX_ITEMS:
             raise FanclubError('Invalid notification count')
         return count
+
+    def _count(self):
+        return self._validated_count(self._get('/auth/notifications/count'))
+
+    def check_session(self, checkpoint):
+        """Check saved access against the protected count without listing content."""
+        access = self._session.get('accessToken') or self._session.get('token')
+        if access:
+            try:
+                self._validated_count(self._request('/auth/notifications/count', token=access))
+                return
+            except FanclubError as error:
+                if error.status != 401 or not (self._session.get('refreshToken') or self._session.get('cookies')):
+                    raise
+        # An existing access token was already checked. Only a newly refreshed
+        # one can establish a different result for this test.
+        self._authenticate(allow_fallback=False)
+        checkpoint(self.session_snapshot)
+        self._count()
 
     @staticmethod
     def _summary(kind, row):

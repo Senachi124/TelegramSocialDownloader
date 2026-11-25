@@ -1,5 +1,7 @@
 import http.client
 import http.server
+import base64
+import hashlib
 import json
 import os
 import re
@@ -120,6 +122,76 @@ class WebServiceTests(unittest.TestCase):
         self.assertEqual(self.request('delivery-review', cookie=cookie, form=legacy)[0], 404)
         self.assertEqual(self.request('delivery-review', cookie=cookie)[0], 404)
         provider.assert_not_called()
+
+    def test_fanclub_export_is_copyable_text_with_scoped_script_policy(self):
+        from html import unescape
+        from importlib.resources import files
+        from media_bot import push
+
+        cookie, _ = self.login()
+        self.enterContext(patch.object(push, 'providers', return_value={'takaneko': {}}))
+        provider = self.enterContext(patch.object(push, 'control', return_value={
+            'users': [], 'capabilities': ['set_session']}))
+        status, page, headers = self.request('subscriptions', cookie=cookie)
+        self.assertEqual(status, 200)
+        text = re.search(r'<textarea id="fanclub-export-script"[^>]*readonly[^>]*>(.*?)</textarea>', page, re.S)
+        self.assertEqual(unescape(text[1]), files('media_bot.admin').joinpath('fanclub_export.txt').read_text().rstrip())
+        self.assertIn('id="copy-fanclub-script" type="button"', page)
+        self.assertNotIn('>Test connection<', page)
+        helper, = re.findall('<script>(.*?)</script>', page, re.S)
+        digest = base64.b64encode(hashlib.sha256(helper.encode()).digest()).decode()
+        csp = headers['Content-Security-Policy']
+        self.assertEqual(next(part.strip() for part in csp.split(';') if 'script-src' in part),
+                         f"script-src 'sha256-{digest}'")
+        self.assertNotIn('script-src', self.request('users', cookie=cookie)[2]['Content-Security-Policy'])
+        self.assertNotIn('script-src', self.request('subscriptions')[2]['Content-Security-Policy'])
+        provider.assert_called_once_with({}, 'list')
+
+    def test_fanclub_connection_checks_only_saved_session_and_reports_fixed_result(self):
+        from media_bot import push
+
+        entry = {'uid': 2500, 'control': '/fixture/provider.sock'}
+        self.enterContext(patch.object(push, 'providers', return_value={'takaneko': entry}))
+        rpc = self.enterContext(patch.object(push.push_socket, 'exchange'))
+        cookie, csrf = self.login()
+        form = {'csrf': csrf}
+        self.assertEqual(self.request('fanclub-test', form=form)[0], 401)
+        self.assertEqual(self.request('fanclub-test', cookie=cookie)[0], 404)
+        self.assertEqual(self.request('fanclub-test', cookie=cookie, form={'csrf': 'bad'})[0], 403)
+        self.assertEqual(self.request('fanclub-test', cookie=cookie, origin='https://other.example', form=form)[0], 403)
+        status, page, _ = self.request('fanclub-test', cookie=cookie, form=dict(form, session='unsaved-secret'))
+        self.assertEqual(status, 400)
+        self.assertNotIn('unsaved-secret', page)
+        self.assertIn('href="/bot/subscriptions#fanclub-connection"', page)
+        rpc.assert_not_called()
+
+        listing = {'ok': True, 'users': [], 'capabilities': ['set_session', 'test_session']}
+        for reply, message, role in [
+                ({'ok': True, 'result': 'connected'}, 'Connected. The saved login', 'status'),
+                ({'ok': True, 'result': 'no_session'}, 'Save a Fanclub login', 'alert'),
+                ({'ok': True, 'result': 'unauthorized'}, 'Fanclub rejected', 'alert'),
+                ({'ok': True, 'result': 'forbidden'}, 'Fanclub denied', 'alert'),
+                ({'ok': True, 'result': 'changed'}, 'The saved login changed', 'alert'),
+                ({'ok': False, 'result': 'connected'}, 'The provider could not confirm', 'alert'),
+                ({'ok': True, 'result': 'provider-raw-secret'}, 'The provider could not confirm', 'alert'),
+                (TimeoutError('provider-raw-secret'), 'The provider could not confirm', 'alert')]:
+            rpc.side_effect = [reply, listing]
+            status, _, headers = self.request('fanclub-test', cookie=cookie, form=form)
+            self.assertEqual((status, headers['Location']), (303, '/bot/subscriptions#fanclub-connection'))
+            self.assertEqual(rpc.call_args.args, (entry['control'], entry['uid'], {'op': 'test_session'}))
+            flash = headers['Set-Cookie'].split(';', 1)[0]
+            self.assertNotIn('provider-raw-secret', flash)
+            status, page, headers = self.request('subscriptions', cookie=cookie + '; ' + flash)
+            self.assertEqual(status, 200)
+            section = page.split('id="fanclub-connection"', 1)[1].split('</div>', 1)[0]
+            self.assertIn('action="/bot/fanclub-test"', section)
+            self.assertNotIn('name="session"', section)
+            self.assertIn(f'role="{role}">{message}', section)
+            self.assertNotIn('provider-raw-secret', page)
+            self.assertIn('Max-Age=0', headers['Set-Cookie'])
+        rpc.side_effect = [listing]
+        _, page, _ = self.request('subscriptions', cookie=cookie + '; mb_fc_test=connected.fake')
+        self.assertNotIn('Connected. The saved login', page)
 
     def test_error_log_is_authenticated_read_only_and_has_no_provider_dependency(self):
         from media_bot import error_log, push

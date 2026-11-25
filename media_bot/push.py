@@ -164,12 +164,13 @@ def dispatch(entry, request, fd, send=None, slug=None):
         raise
 
 
-def web_panel(hidden):
-    from .admin import views as layout
+def web_panel(hidden, test_result=None):
+    from .admin import fanclub_session, views as layout
 
     configured = providers()
     if not configured:
         return ('<section><h2>No subscription providers configured</h2>'
+                + fanclub_session.connection_panel(hidden, False, test_result) +
                 '<p>To send Fanclub updates, install the optional Takaneko provider on your server.</p></section>')
 
     with core.db() as db:
@@ -187,21 +188,21 @@ def web_panel(hidden):
                 raise ValueError('Invalid subscriber list')
             subscribed = set(subscribers)
         except (OSError, ValueError, KeyError):
+            if slug == 'takaneko':
+                section += fanclub_session.connection_panel(hidden, False, test_result)
             sections.append(section + '<p>Subscriber list unavailable.</p></section>')
             continue
 
         caps = listing.get('capabilities', [])
+        if not isinstance(caps, list):
+            caps = []
         provider = hidden + layout.hidden_field('provider', slug)
-        if slug == 'takaneko' and 'set_session' in caps:
-            section += '<h3>Fanclub session</h3>'
-            controls = layout.field('session', 'Fanclub login (JSON)', 'password',
-                                    attrs='required autocomplete="new-password" spellcheck="false" aria-describedby="fanclub-login-help"')
-            controls += ('<p id="fanclub-login-help" class="muted">For automatic renewal, paste '
-                         '<code>{"refreshToken":"…"}</code> or a browser cookie array that can renew the Fanclub login. '
-                         'An <code>accessToken</code> on its own works until it expires. Saving replaces the current login.</p>')
-            controls += layout.button('Save Fanclub session', 'set_session')
-            section += layout.form('subscriptions', provider, controls)
-            section += f'<p>Enable or pause Fanclub updates in <a href="{core.BASE}features#takaneko">Features</a>.</p>'
+        if slug == 'takaneko':
+            if 'set_session' in caps:
+                section += fanclub_session.login_panel(provider)
+            section += fanclub_session.connection_panel(hidden, 'test_session' in caps, test_result)
+            if 'set_session' in caps:
+                section += f'<p>Enable or pause Fanclub updates in <a href="{core.BASE}features#takaneko">Features</a>.</p>'
 
         section += '<h3>Recipients</h3>'
         if not eligible and not subscribed:

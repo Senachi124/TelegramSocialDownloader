@@ -145,6 +145,26 @@ def record_inventory(posts):
 def credentials():return transport.secret('get')
 
 
+def test_session():
+    from . import session_probe
+
+    try:
+        with deployment_guard() as available:
+            if not available or not _AUTH_LOCK.acquire(blocking=False):
+                return 'busy'
+            try:
+                # Bound DNS, slow reads, and the connection as a single operation.
+                # The child gets the saved login directly from the credential broker.
+                process = subprocess.run([sys.executable, '-IB', '-m', 'takaneko_telegram.session_probe'],
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         timeout=9, check=False)
+                return session_probe.RESULTS.get(process.returncode, 'unavailable')
+            finally:
+                _AUTH_LOCK.release()
+    except (OSError, subprocess.TimeoutExpired):
+        return 'unavailable'
+
+
 def persist_session(client, original):
     updated=getattr(client,'session_snapshot',None)
     if callable(updated):updated=updated()

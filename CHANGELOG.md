@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a copyable DevTools helper for preparing a Fanclub login and a **Test connection** button in Takaneko subscriptions.
+
 - Add a read-only Error log for failed, partial or paused downloads, Telegram push errors and provider health reports. Takaneko subscriptions now contains Fanclub login and recipient settings. Takaneko errors are logged without sending owner reminders.
 - Rename the admin page to **Takaneko subscriptions** and explain which Fanclub login formats support automatic renewal.
 - Redesign the web console for desktop and mobile. Connection settings save independently, access and subscription rows show available actions, and credential edits return to the selected pool.

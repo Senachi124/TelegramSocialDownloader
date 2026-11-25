@@ -20,7 +20,7 @@ Download media in Telegram and receive subscriptions from connected services. Th
 | --- | --- |
 | Features | Enable or pause Instagram, TikTok, X, Threads and YouTube downloads independently. Switch Telegram translation and OCR on or off, and control the installed Takaneko provider. |
 | Users and groups | Review requests, approve or revoke users, set the access policy and manage registered groups. The configured owner has additional Telegram controls. |
-| Takaneko subscriptions | Connect your Fanclub session and manage subscribed recipients. |
+| Takaneko subscriptions | Use the DevTools helper to format your Fanclub login, save it, test the connection and manage subscribed recipients. |
 | Error log | Read the latest 100 entries for failed, partial or paused downloads, Telegram push errors and provider health reports. Each entry shows its source, message and time when known. |
 | Account pools | Import or update platform cookies, enable or disable an account, select a primary account or rotation policy, and test an account against a supplied post. |
 | API credentials | Set up the Telegram Local Bot API and add, rotate or disable translation API keys. |

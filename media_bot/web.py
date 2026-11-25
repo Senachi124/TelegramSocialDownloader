@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import admin_auth, local_socket
 from . import core as c, links
-from .admin import feature_controls, views as layout
+from .admin import fanclub_session, feature_controls, views as layout
 from .admin.actions import ACTIONS, ACCOUNT_RESUME_MAX_AGE, destination, manage, resume_accounts
 from .admin.forms import FormError, parse_form
 
@@ -36,11 +36,14 @@ def session(token,at=None):
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def setup(self):super().setup();self.connection.settimeout(30)
-    def respond(self,status,body='',headers=(),mime='text/html; charset=utf-8'):
+    def respond(self,status,body='',headers=(),mime='text/html; charset=utf-8', *, copy_script=False):
         raw=body.encode() if isinstance(body,str) else body
         self.send_response(status);self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(raw)))
         self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','same-origin')
-        self.send_header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+        policy = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+        if copy_script:
+            policy += f"; script-src 'sha256-{fanclub_session.COPY_HASH}'"
+        self.send_header('Content-Security-Policy', policy)
         self.send_header('X-Content-Type-Options','nosniff')
         for k,v in headers:self.send_header(k,v)
         self.end_headers()
@@ -83,7 +86,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return links.serve_download(self,route.split('/')[1],self.command=='HEAD')
             if route not in layout.PAGES:
                 return self.respond(404,'Not found')
-            signed_in = session(self.cookies().get('mb_session'))
+            cookies = self.cookies()
+            signed_in = session(cookies.get('mb_session'))
             if not signed_in:
                 return self.redirect(c.BASE+'login')
             hidden = layout.hidden_field('csrf',signed_in['csrf'])
@@ -96,7 +100,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = feature_controls.panel(hidden)
             elif route=='subscriptions':
                 from . import push
-                body = push.web_panel(hidden)
+                result = fanclub_session.read_result(cookies.get('mb_fc_test', ''), signed_in['csrf'])
+                body = push.web_panel(hidden, result)
             elif route=='errors':
                 from . import error_log
                 body = layout.errors(error_log.recent())
@@ -107,11 +112,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = layout.keys(hidden)
             else:
                 body = layout.connection(hidden)
-            saved = ACTIONS.get(self.cookies().get('mb_update'))
+            saved = ACTIONS.get(cookies.get('mb_update'))
             notice = saved[2] if saved and saved[0] == route else ''
             headers = [self.cookie('mb_update', '', 0)] if notice else []
+            if route == 'subscriptions' and 'mb_fc_test' in cookies:
+                headers.append(self.cookie('mb_fc_test', '', 0))
             return self.respond(200,layout.page(layout.PAGES[route], body, signed_in=True,
-                                route=route, session_fields=hidden, notice=notice), headers)
+                                route=route, session_fields=hidden, notice=notice), headers,
+                                copy_script=route=='subscriptions')
         except (OSError,ValueError,KeyError,sqlite3.Error):
             return self.respond(503,'Service settings are temporarily unavailable.')
 
@@ -171,6 +179,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             form = parse_form(content_type, self.rfile.read(length), allow_upload=route=='account')
             if not csrf_matches(form.get('csrf'),signed_in['csrf']):
                 return self.respond(403,'Expired form')
+            if route=='fanclub-test':
+                result = fanclub_session.test_saved(form)
+                feedback = fanclub_session.result_cookie(result, signed_in['csrf'])
+                return self.redirect(c.BASE+'subscriptions#fanclub-connection', [self.cookie('mb_fc_test', feedback, 45)])
             if route=='logout':
                 with c.db() as db:
                     db.execute('DELETE FROM sessions WHERE digest=?',(signed_in['digest'],))

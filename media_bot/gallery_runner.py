@@ -14,7 +14,7 @@ def main():
     from . import instagram,tiktok
     p=json.load(sys.stdin);platform=p.get('platform','tiktok')
     if platform=='twitter':
-        from .twitter_runner import run
+        from .twitter.runner import run
         run(p);return
     if platform=='youtube' or tiktok.uses_yt_dlp(p):
         from .yt_runner import run
@@ -122,7 +122,7 @@ def main():
     try:
         restore_adapter=adapter.install(result,preferences)
         if single_story:
-            from .instagram_story import SingleStoryExtractor
+            from .instagram.story import SingleStoryExtractor
             url=instagram.target(p['url'],'stories',single_story=True)
             source=SingleStoryExtractor.from_url(url)
         else:

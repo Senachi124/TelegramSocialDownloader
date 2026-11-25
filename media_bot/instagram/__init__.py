@@ -10,8 +10,8 @@ def options(cookies):
             'include':['stories']}
 
 def install(result,preferences=None):
-    from .instagram_web_gallery import install_web_graphql
-    from .instagram_quality import install as install_quality
+    from .web_gallery import install_web_graphql
+    from .quality import install as install_quality
     restore_web=install_web_graphql(result)
     restore_quality=install_quality(result,preferences)
     def restore():

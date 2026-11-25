@@ -2,7 +2,8 @@
 import json
 import threading
 import time
-from . import access, core as c, group_download, translation, translation_albums
+from . import access, core as c, group_download
+from .translations import albums as translation_albums, commands as translation
 
 READY=threading.Event()
 CAPACITY=1000

@@ -67,7 +67,7 @@ def report_health(slug, code):
 
 
 def dispatch(entry, request, fd, send=None, slug=None):
-    from .worker import telegram, TelegramError
+    from .processing.telegram_api import telegram, TelegramError
     if request.get('op') == 'health' and fd is None and slug:
         return report_health(slug, request.get('status'))
     if request.get('op') == 'limits' and fd is None:
@@ -136,7 +136,7 @@ def web_panel(hidden):
         if health:
             section += '<p>' + html.escape(health) + '</p>'
         if slug == 'takaneko' and 'set_session' in listing.get('capabilities', []):
-            from . import web_layout as layout
+            from .admin import views as layout
             controls = layout.hidden_field('provider', slug)
             controls += layout.field('session', 'Fanclub session or browser cookies (JSON)', 'password',
                                      attrs='required autocomplete="new-password" spellcheck="false"')

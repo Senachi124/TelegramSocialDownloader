@@ -37,9 +37,13 @@ jobs:
           if os.environ['GITHUB_REF_TYPE'] == 'tag':
               assert os.environ['GITHUB_REF_NAME'] == 'v' + __version__
           with zipfile.ZipFile(next((root/'dist').glob('*.whl'))) as wheel:
-              assert {'media_bot/web.py', 'media_bot/worker.py', 'media_bot/broker.py', 'media_bot/push.py',
-                      'takaneko_telegram/__main__.py', 'takaneko_telegram/takaneko_feed.py',
-                      'takaneko_telegram/secrets.py'} <= set(wheel.namelist())
+              expected = {
+                  source.relative_to(package.parent).as_posix()
+                  for package in (root/'media_bot', root/'services/takaneko/takaneko_telegram')
+                  for source in package.rglob('*.py')
+              }
+              missing = expected.difference(wheel.namelist())
+              assert not missing, f'Modules missing from the wheel: {sorted(missing)}'
           PY
       - name: Install bot and Takaneko provider on a clean Linux host
         if: matrix.python == '3.11'

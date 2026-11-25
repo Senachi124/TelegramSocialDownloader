@@ -10,7 +10,7 @@ import tempfile
 from . import api_keys, config, local_socket
 from .core import SECRET_SOCKET
 from . import accounts
-from . import translation_cache
+from .translations import image_cache as translation_cache
 
 def secret_dir():
     path = Path(os.environ['MEDIA_BOT_SECRET_DIR'])
@@ -197,7 +197,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if self.path=='/local-api':return self.reply(save_local_api(p))
             old=load()
             if self.path.startswith('/instagram-refresh/'):
-                from . import instagram_cookie_maintenance as maintenance
+                from .instagram import maintenance
                 if self.path.endswith('/snapshot'):
                     return self.reply(maintenance.snapshot(old, p['id']))
                 status = maintenance.apply_result(old, p)

@@ -15,8 +15,12 @@ telegram-social-downloader = "media_bot.__main__:main"
 
 [tool.setuptools]
 license-files = ["INSTAGRAM-WEB-NOTICE.txt"]
-packages = ["media_bot", "takaneko_telegram"]
 package-dir = {takaneko_telegram = "services/takaneko/takaneko_telegram"}
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+where = [".", "services/takaneko"]
+include = ["media_bot", "media_bot.*", "takaneko_telegram", "takaneko_telegram.*"]
+namespaces = false

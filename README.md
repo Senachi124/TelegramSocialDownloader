@@ -85,9 +85,15 @@ Put media and temporary files on the same filesystem under `MEDIA_BOT_DATA`. The
 
 Enable the bundled provider on your own Linux host, then sign in to the bot’s web console. Under **Subscriptions → takaneko**, save your own Fanclub session and subscribe the Telegram users you have approved. The first successful poll records a baseline. Subsequent posts go to eligible subscribers. See the [Takaneko setup guide](docs/takaneko.md).
 
+### Source layout
+
 | Component | Source | Responsibility |
 | --- | --- | --- |
-| Telegram bot and web console | [media_bot](media_bot/) | Telegram access, downloads, administration and the shared push transport |
+| Telegram worker | [worker.py](media_bot/worker.py) and [processing](media_bot/processing/) | Poll Telegram, coordinate jobs, fetch media and deliver results |
+| Platform adapters | [Instagram](media_bot/instagram/), [Threads](media_bot/threads/) and [X](media_bot/twitter/) | Platform-specific requests, parsing and extraction |
+| Translation and OCR | [translations](media_bot/translations/) | Handle translation commands, group albums and image recognition |
+| Web administration | [web.py](media_bot/web.py) and [admin](media_bot/admin/) | HTTP sessions, management actions, form parsing and views |
+| Push transport | [push.py](media_bot/push.py) | Validate provider access and send subscription updates |
 | Takaneko provider | [services/takaneko](services/takaneko/) | Fanclub login, article discovery, media, subscriptions and per-recipient delivery records |
 | Installation and updates | [deploy](deploy/) | Linux service installation and GitHub Actions release upgrades |
 

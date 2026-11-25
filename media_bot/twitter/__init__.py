@@ -7,7 +7,7 @@ from urllib.parse import urlsplit, parse_qs
 
 
 def post_id(url):
-    from .core import validate_url, TWITTER_HOSTS
+    from ..core import validate_url, TWITTER_HOSTS
     p=urlsplit(validate_url(url))
     match=re.fullmatch(r'/(?:[A-Za-z0-9_]{1,15}/status|i/status|i/web/status)/(\d{1,25})(?:/(?:photo|video)/[1-4])?/?',p.path)
     if p.hostname not in TWITTER_HOSTS or not match:

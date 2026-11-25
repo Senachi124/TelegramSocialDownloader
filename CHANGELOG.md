@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Organize platform adapters, worker processing, translation and web administration into focused modules. Existing service commands and platform import paths remain available.
+
 ## 1.1.1 — 2026-11-25
 
 - Verify the selected media volume and provider services during setup and release upgrades.

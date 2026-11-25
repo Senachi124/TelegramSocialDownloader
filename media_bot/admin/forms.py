@@ -19,9 +19,9 @@ def parse_form(content_type, raw, *, allow_upload=False):
         try:
             return {name: values[-1] for name, values in parse_qs(raw.decode('utf-8')).items()}
         except UnicodeError:
-            raise ValueError('Supply a UTF-8 encoded form') from None
+            raise FormError('Supply a UTF-8 encoded form.') from None
     if not allow_upload:
-        raise ValueError('This endpoint does not accept uploads')
+        raise FormError('This form does not accept uploads.')
 
     fields = {}
     upload = None
@@ -52,12 +52,12 @@ def parse_form(content_type, raw, *, allow_upload=False):
         if fields.get('platform') != 'youtube':
             raise ValueError()
     except (UnicodeError, TypeError):
-        raise ValueError('Supply a UTF-8 cookies.txt file') from None
+        raise FormError('Supply a UTF-8 cookies.txt file.') from None
     except ValueError:
-        raise ValueError('Invalid cookie import (128 KiB maximum)') from None
+        raise FormError('Invalid cookie import (128 KiB maximum).') from None
 
     if upload and upload.strip():
         if fields.get('cookie', '').strip():
-            raise ValueError('Choose either an upload or pasted cookies')
+            raise FormError('Choose either an upload or pasted cookies.')
         fields['cookie'] = upload
     return fields

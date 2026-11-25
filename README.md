@@ -22,8 +22,8 @@ Download media in Telegram and receive subscriptions from connected services. Th
 | Users and groups | Review requests, approve or revoke users, set the access policy and manage registered groups. The configured owner has additional Telegram controls. |
 | Subscriptions | Connect your Takaneko Fanclub session, subscribe or unsubscribe approved users, and see provider health. Each provider owns its subscriber list and delivery progress. |
 | Account pools | Import or update platform cookies, enable or disable an account, select a primary account or rotation policy, and test an account against a supplied post. |
-| APIs | Configure the bot token, Telegram Local Bot API credentials and translation API keys. |
-| Connection | Pause or resume Telegram polling and processing, adjust platform limits and manage failure notifications. A failure alert includes the reason. |
+| API credentials | Set up the Telegram Local Bot API and add, rotate or disable translation API keys. |
+| Bot connection | Add or replace the bot token, check the connection, enable polling, set media limits and manage owner failure alerts. Each form saves its own settings. |
 
 Open **Features** in the web console and choose **Pause** or **Enable** beside the function you want to change. The setting takes effect without a restart and survives upgrades. An existing batch waits when it reaches a paused platform and resumes in order when you enable it again. Work already in progress can finish. If a new message includes links from a paused platform, the bot names the platform so the user can resend the other links. Account pools, API keys and subscriptions are managed separately.
 

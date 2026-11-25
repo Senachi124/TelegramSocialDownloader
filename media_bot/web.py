@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 from . import admin_auth, local_socket
 from . import core as c, links
 from .admin import feature_controls, views as layout
-from .admin.actions import ACCOUNT_RESUME_MAX_AGE, manage, resume_accounts
+from .admin.actions import ACTIONS, ACCOUNT_RESUME_MAX_AGE, destination, manage, resume_accounts
 from .admin.forms import FormError, parse_form
 
 DEPLOYMENT_RECEIPT = Path('/var/lib/telegram-social-deploy/status.json')
@@ -54,7 +54,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         csrf = secrets.token_urlsafe(32)
         controls = layout.field('username','Username',attrs='required autocomplete="username"')
         controls += layout.field('password','Password','password',attrs='required autocomplete="current-password"')
-        body = '<section>'+layout.form('login',layout.hidden_field('csrf',csrf),controls+layout.button('Sign in'))+'</section>'
+        body = layout.form('login',layout.hidden_field('csrf',csrf),controls+layout.button('Sign in'))
         if message:
             body = f'<p role="alert">{escape(message)}</p>'+body
         self.respond(200,layout.page('Sign in',body),[self.cookie('mb_login_csrf',csrf,600)])
@@ -80,8 +80,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.form()
             if re.fullmatch(r'download/[A-Za-z0-9_-]{43}',route):
                 return links.serve_download(self,route.split('/')[1],self.command=='HEAD')
-            panels = {'':'Bot connection','features':'Features','users':'Users and groups','subscriptions':'Subscriptions','accounts':'Account pools','keys':'API credentials'}
-            if route not in panels:
+            if route not in layout.PAGES:
                 return self.respond(404,'Not found')
             signed_in = session(self.cookies().get('mb_session'))
             if not signed_in:
@@ -98,13 +97,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 from . import push
                 body = push.web_panel(hidden)
             elif route=='accounts':
-                body = layout.pools(hidden)
+                platform = parse_qs(path.query).get('platform', [''])[0]
+                body = layout.pools(hidden, selected_platform=platform)
             elif route=='keys':
                 body = layout.keys(hidden)
             else:
                 body = layout.connection(hidden)
-            body += layout.form('logout',hidden,layout.button('Sign out'))
-            return self.respond(200,layout.page(panels[route],body,signed_in=True,route=route))
+            saved = ACTIONS.get(self.cookies().get('mb_update'))
+            notice = saved[2] if saved and saved[0] == route else ''
+            headers = [self.cookie('mb_update', '', 0)] if notice else []
+            return self.respond(200,layout.page(layout.PAGES[route], body, signed_in=True,
+                                route=route, session_fields=hidden, notice=notice), headers)
         except (OSError,ValueError,KeyError):
             return self.respond(503,'Service settings are temporarily unavailable.')
 
@@ -138,6 +141,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         route = None
+        signed_in = None
+        form = {}
         try:
             if self.headers.get('Origin')!=c.ORIGIN:
                 return self.respond(403,'Origin mismatch')
@@ -148,29 +153,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not path.startswith(c.BASE):
                 return self.respond(404,'Not found')
             route = path[len(c.BASE):]
-            form = parse_form(self.headers.get('Content-Type',''), self.rfile.read(length), allow_upload=route=='account')
             cookies = self.cookies()
+            content_type = self.headers.get('Content-Type','')
             if route=='login':
-                return self._login(form,cookies)
+                return self._login(parse_form(content_type, self.rfile.read(length)),cookies)
             signed_in = session(cookies.get('mb_session',''))
             if not signed_in:
-                return self.respond(401,'Sign in again')
+                return self.respond(401, layout.page('Session expired',
+                    f'<p>Sign in to continue editing settings.</p><a href="{c.BASE}login">Sign in again</a>'))
+            if route == 'account' and content_type.lower().startswith('multipart/form-data'):
+                # Only the YouTube editor accepts files. Keep its return link if decoding fails.
+                form = {'platform': 'youtube'}
+            form = parse_form(content_type, self.rfile.read(length), allow_upload=route=='account')
             if not csrf_matches(form.get('csrf'),signed_in['csrf']):
                 return self.respond(403,'Expired form')
             if route=='logout':
                 with c.db() as db:
                     db.execute('DELETE FROM sessions WHERE digest=?',(signed_in['digest'],))
-                return self.redirect(c.BASE+'login',[self.cookie('mb_session','',0)])
+                return self.redirect(c.BASE+'login',[self.cookie('mb_session','',0),self.cookie('mb_update','',0)])
             target = manage(route, form)
             if target is None:
                 return self.respond(404,'Not found')
-            return self.redirect(c.BASE+target)
+            return self.redirect(c.BASE+target, [self.cookie('mb_update', route.split('/', 1)[0], 45)])
         except (ValueError,KeyError,OverflowError) as error:
             message = str(error) if isinstance(error,FormError) else 'Invalid form or credential settings.'
             status = error.status if isinstance(error,FormError) else 400
-            target, label = ('features', 'Return to Features') if route=='features' else ('', 'Return to settings')
-            body = f'<p role="alert">{escape(message)}</p><a href="{c.BASE}{target}">{label}</a>'
-            return self.respond(status,layout.page('Update failed',body,signed_in=True))
+            target = destination(route, form) if signed_in else 'login'
+            panel = urlsplit(target).path
+            label = 'Return to ' + layout.PAGES[panel] if panel in layout.PAGES else 'Sign in'
+            body = f'<p role="alert">{escape(message)}</p><a href="{c.BASE}{escape(target,quote=True)}">{escape(label)}</a>'
+            fields = layout.hidden_field('csrf',signed_in['csrf']) if signed_in else ''
+            return self.respond(status,layout.page('Update failed',body,signed_in=bool(signed_in),
+                                                   route=panel,session_fields=fields))
         except Exception:
             return self.respond(503,'The service is unavailable. Check the connection and try again.')
 

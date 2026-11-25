@@ -1,4 +1,5 @@
 name: Deploy to production
+run-name: ${{ inputs.trial_sha && format('Trial {0}', inputs.trial_sha) || (inputs.tag && format('Release {0}', inputs.tag)) || 'Deploy to production' }}
 on:
   workflow_run:
     workflows: [Test and release]
@@ -6,8 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Published release tag
-        required: true
+        description: Published release tag (leave empty for a trial)
+        required: false
+        type: string
+      trial_sha:
+        description: Full default-branch commit SHA of a staged development build
+        required: false
         type: string
 
 permissions: {}
@@ -36,22 +41,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+          TRIAL_SHA: ${{ inputs.trial_sha }}
           STATUS_URL: ${{ secrets.DEPLOY_STATUS_URL }}
         run: |
           set -eu
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$STATUS_URL" == https://* ]]
-          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
-          id=$(jq -n --arg sha "$sha" --arg tag "$TAG" --arg run "$GITHUB_RUN_ID" \
-            '{ref:$sha,task:"telegram-upgrade",environment:"telegram-app",auto_merge:false,required_contexts:[],payload:{tag:$tag,run_id:$run}}' |
+          if [[ -n "$TRIAL_SHA" ]]; then
+            [[ -z "$TAG" && "$GITHUB_EVENT_NAME" == workflow_dispatch && "$TRIAL_SHA" == "$GITHUB_SHA" ]]
+            sha=$TRIAL_SHA
+            payload=$(jq -n --arg run "$GITHUB_RUN_ID" '{trial:true,run_id:$run}')
+          else
+            [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+            payload=$(jq -n --arg tag "$TAG" --arg run "$GITHUB_RUN_ID" '{tag:$tag,run_id:$run}')
+          fi
+          id=$(jq -n --arg sha "$sha" --argjson payload "$payload" \
+            '{ref:$sha,task:"telegram-upgrade",environment:"telegram-app",auto_merge:false,required_contexts:[],payload:$payload}' |
             gh api "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
           final=failure
           trap 'gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state="$final" --silent' EXIT
-          echo "Requested $TAG ($sha), deployment $id"
+          echo "Requested $sha, deployment $id"
           for i in $(seq 1 135); do
             if reply=$(curl -fsS --max-time 8 --proto '=https' "$STATUS_URL?deployment=$id" 2>/dev/null); then
               state=$(jq -r --arg id "$id" --arg sha "$sha" 'select((.deployment|tostring)==$id and .sha==$sha) | .state' <<< "$reply" 2>/dev/null || true)
-              if [[ "$state" == success ]]; then final=success; echo "Production verified $TAG"; exit 0; fi
+              if [[ "$state" == success ]]; then final=success; echo "Production verified $sha"; exit 0; fi
               if [[ "$state" == failure ]]; then echo 'Host reported a deployment failure'; exit 1; fi
             fi
             sleep 10

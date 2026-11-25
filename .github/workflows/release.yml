@@ -42,6 +42,7 @@ jobs:
                   for package in (root/'media_bot', root/'services/takaneko/takaneko_telegram')
                   for source in package.rglob('*.py')
               }
+              expected.add('media_bot/admin/console.css')
               missing = expected.difference(wheel.namelist())
               assert not missing, f'Modules missing from the wheel: {sorted(missing)}'
           PY

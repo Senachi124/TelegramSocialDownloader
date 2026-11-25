@@ -28,10 +28,17 @@ CONFIG = '/etc/telegram-social-deploy/config.json'
 MANIFEST = 'DEPLOYMENT-MANIFEST.json'
 
 
-def version(tag):
-    if not re.fullmatch(r'v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)',tag):
-        raise ValueError('Expected a semantic version release tag')
-    return tuple(map(int, tag[1:].split('.')))
+_NUMBER = r'(0|[1-9][0-9]*)'
+_VERSION = re.compile(r'v' + r'\.'.join([_NUMBER]*3) + r'(?:\.dev' + _NUMBER + r')?')
+
+
+def version(ref):
+    match = _VERSION.fullmatch(ref)
+    if not match:
+        raise ValueError('Expected a release version or development build')
+    major, minor, patch, dev = match.groups()
+    # A stable release follows every development build of the same release.
+    return int(major), int(minor), int(patch), dev is None, int(dev or 0)
 
 
 def trusted(path):
@@ -106,14 +113,36 @@ def property_of(unit,name):
     return subprocess.check_output(['systemctl','show',unit,'-p',name,'--value'],text=True).strip()
 
 
-def prepare(old,root,wheel,tag,sha,wheel_digest):
+def rollback_base(old, previous):
+    if not version('v'+previous['version'])[3]:
+        base = previous.get('trial_base') or {}
+    else:
+        base = {key: previous.get(key) for key in ('version','commit','wheel_sha256')}
+        # Early installers kept the release wheel next to the manifest without its digest.
+        if base['wheel_sha256'] is None:
+            wheel = old / ('telegram_social_downloader-' + base['version'] + '-py3-none-any.whl')
+            if wheel.is_file():
+                trusted(wheel)
+                base['wheel_sha256'] = wheel_info(wheel, 'v'+base['version'])
+    if (not base.get('version') or not version('v'+base['version'])[3]
+            or not re.fullmatch(r'[a-f0-9]{40}',base.get('commit') or '')
+            or not re.fullmatch(r'[a-f0-9]{64}',base.get('wheel_sha256') or '')):
+        raise ValueError('A trial requires verified stable release provenance for rollback')
+    return base
+
+
+def prepare(old,root,wheel,tag,sha,wheel_digest,base=None):
     target = root/('telegram-'+tag[1:]+'-'+sha[:12])
     if target.exists():
         trusted(target)
         manifest=json.loads((target/MANIFEST).read_text())
-        if manifest.get('commit')==sha and manifest.get('wheel_sha256')==wheel_digest:
-            return target
-        raise ValueError('Existing release directory has different provenance')
+        if manifest.get('commit')!=sha or manifest.get('wheel_sha256')!=wheel_digest:
+            raise ValueError('Existing release directory has different provenance')
+        if base is not None and manifest.get('trial_base') != base:
+            manifest['trial_base'] = base
+            atomic_json(target/MANIFEST, manifest)
+            (target/MANIFEST).chmod(0o644)
+        return target
     previous_mask=os.umask(0o022)
     target.mkdir(mode=0o755)
     try:
@@ -135,6 +164,10 @@ def prepare(old,root,wheel,tag,sha,wheel_digest):
               cwd='/',timeout=600)
         spawn(command+['check'],cwd='/',timeout=60)
         manifest=json.loads((old/MANIFEST).read_text())
+        if base is None:
+            manifest.pop('trial_base', None)
+        else:
+            manifest['trial_base'] = base
         manifest.update(version=tag[1:],commit=sha,wheel_sha256=wheel_digest,branch='main')
         atomic_json(target/MANIFEST,manifest)
         (target/MANIFEST).chmod(0o644)
@@ -403,7 +436,10 @@ def locked_config(filename):
         yield cfg
 
 
-def upgrade(filename,wheel,tag,sha):
+def upgrade(filename,wheel,tag,sha,*,trial=False,allow_trial_rollback=False):
+    stable = version(tag)[3]
+    if (trial and stable) or (not trial and not stable):
+        raise ValueError('The deployment mode must match the wheel version')
     if not re.fullmatch(r'[a-f0-9]{40}',sha):
         raise ValueError('Invalid release commit')
     trusted(wheel)
@@ -425,12 +461,18 @@ def upgrade(filename,wheel,tag,sha):
         trusted(old)
         previous=json.loads((old/MANIFEST).read_text())
         if previous.get('commit')==sha and previous['version']==tag[1:]:
+            if trial and previous.get('wheel_sha256') != wheel_digest:
+                raise ValueError('The active trial has a different wheel digest')
             check(cfg)
             print('Requested version is already active.')
             return
-        if version(tag)<=version('v'+previous['version']):
+        base = {'version':tag[1:], 'commit':sha, 'wheel_sha256':wheel_digest}
+        returning = (stable and allow_trial_rollback and not version('v'+previous['version'])[3]
+                     and previous.get('trial_base') == base)
+        if not returning and version(tag)<=version('v'+previous['version']):
             raise ValueError('Release must advance the installed version')
-        target=prepare(old,root,wheel,tag,sha,wheel_digest)
+        trial_base = rollback_base(old,previous) if trial else None
+        target=prepare(old,root,wheel,tag,sha,wheel_digest,trial_base)
         freeze=cfg.get('freeze_file')
         if freeze and Path(freeze).exists():
             raise RuntimeError('Backup freeze in progress')
@@ -478,7 +520,7 @@ def upgrade(filename,wheel,tag,sha):
                 if timer_active:
                     systemctl('start',cfg['refresh_timer'])
                 journal_file.unlink()
-                print(f'Activated {tag} at {sha}.')
+                print(f'Activated {tag[1:]} at {sha}.')
             except BaseException:
                 restore(cfg,journal)
                 journal_file.unlink()
@@ -488,12 +530,18 @@ def upgrade(filename,wheel,tag,sha):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',default=CONFIG)
-    for name in ('wheel','tag','sha'):
+    for name in ('wheel','sha'):
         parser.add_argument('--'+name,required=True)
+    source=parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--tag')
+    source.add_argument('--trial-version')
+    parser.add_argument('--allow-trial-rollback',action='store_true')
     args=parser.parse_args()
     if os.getuid()!=0:
         parser.error('The local upgrade controller requires root')
-    upgrade(args.config,Path(args.wheel).resolve(strict=True),args.tag,args.sha)
+    ref=args.tag or 'v'+args.trial_version
+    upgrade(args.config,Path(args.wheel).resolve(strict=True),ref,args.sha,trial=args.trial_version is not None,
+            allow_trial_rollback=args.allow_trial_rollback)
 
 
 if __name__=='__main__':

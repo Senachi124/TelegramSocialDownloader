@@ -77,6 +77,28 @@ The host polls GitHub for deployment requests from the release workflow and repo
 
 For automatic updates, push a new version tag matching the package version. A successful tag release starts production deployment. To deploy an existing published release manually, open **Actions**, select the production deployment workflow, choose **Run workflow** on the default branch, enter the release tag and run it. Check the deployment job and the status endpoint for the deployed revision. For a service mounted under a prefix, include that prefix in `DEPLOY_STATUS_URL`.
 
+### Test a development build on one installation
+
+The same production workflow can install a tested development build on a host you select. The package version must end in `.devN`, for example `1.2.0.dev0`. Increment N for each different build of that version. Trial deployments use the existing bot configuration, accounts, subscriptions and queues. The current stable installation must have its wheel digest in its release manifest or its original release wheel in the release directory. For older installations missing both, first install a newer published stable release through Actions. Refresh the host controller with the connection helper above from the reviewed commit before its first trial.
+
+1. Push the commit to your default branch and wait for **Test and release** to pass. Select the successful default-branch push run for that exact commit. On the host, use GitHub CLI as a repository reader to stage the original distribution archive. Replace the repository and run ID below.
+
+   ```sh
+   set -e
+   repo=OWNER/REPO
+   run=123456789
+   sha=$(gh api "repos/$repo/actions/runs/$run" --jq '.head_sha')
+   artifact=$(gh api "repos/$repo/actions/runs/$run/artifacts" --jq '.artifacts[] | select(.name == "distribution" and (.expired | not)) | .id')
+   archive=$(mktemp)
+   trap 'rm -f "$archive"' EXIT
+   gh api "repos/$repo/actions/artifacts/$artifact/zip" > "$archive"
+   sudo install -d -o root -g root -m 0700 /var/lib/telegram-social-deploy/trials
+   sudo install -o root -g root -m 0600 "$archive" "/var/lib/telegram-social-deploy/trials/$sha.zip"
+   ```
+
+2. In **Deploy to production**, run the workflow on the default branch with the full current commit SHA in **trial_sha** and an empty **tag**. The host compares the staged ZIP's SHA-256 to GitHub's successful CI artifact, installs the wheel and reports its normal production health receipt. This creates a GitHub Deployment only. Pushing to the branch alone runs CI.
+3. To leave the trial, deploy the next stable release as usual. To return early, manually run the same workflow with the published tag that was installed before the trial. The controller verifies its original commit and wheel digest, drains work, and switches code while retaining live databases. An older release applies the features it supports. Before returning to a release without individual platform or translation controls, pause global polling in **Bot connection** if those features must stay paused. Your saved feature selections persist for a later upgrade. A failed cutover automatically restores the previous code and admission state.
+
 ## Optional subscription delivery
 
 For Takaneko Fanclub updates, follow the [bundled provider installation](takaneko.md). The installer registers the provider and transport together.

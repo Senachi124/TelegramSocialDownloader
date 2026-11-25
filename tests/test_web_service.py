@@ -95,6 +95,86 @@ class WebServiceTests(unittest.TestCase):
         self.assertIn('Save Fanclub session', body)
         self.assertNotIn('sample-secret', body)
 
+    def test_independent_connection_forms_and_validation_return(self):
+        from media_bot import accounts
+
+        cookie, csrf = self.login()
+        options = {'csrf': csrf, 'enabled': '1', 'failure_alerts': '1'}
+        self.assertEqual(self.request('bot-options', cookie=cookie, form=options)[0], 303)
+        limits = {platform + '_media_limit': '37' for platform in accounts.PLATFORMS}
+        limits['csrf'] = csrf
+        status, _, headers = self.request('media-limits', cookie=cookie, form=limits)
+        self.assertEqual((status, headers['Location']), (303, '/bot/#media-limits'))
+        self.assertTrue(self.c.get_setting('enabled', False))
+        self.assertTrue(self.c.get_setting('failure_alerts', False))
+        for platform in accounts.PLATFORMS:
+            self.assertEqual(self.c.get_setting(platform + '_media_limit', 0), 37)
+
+        invalid = dict(limits, twitter_media_limit='1001', youtube_media_limit='9')
+        status, body, _ = self.request('media-limits', cookie=cookie, form=invalid)
+        self.assertEqual(status, 400)
+        self.assertIn('role="alert"', body)
+        self.assertIn('href="/bot/#media-limits"', body)
+        self.assertEqual(self.c.get_setting('youtube_media_limit', 0), 37)
+
+        self.assertEqual(self.request('bot-options', cookie=cookie, form={'csrf': csrf})[0], 303)
+        self.assertFalse(self.c.get_setting('enabled', True))
+        self.assertFalse(self.c.get_setting('failure_alerts', True))
+        self.assertEqual(self.c.get_setting('twitter_media_limit', 0), 37)
+
+    def test_pool_edit_returns_to_open_platform_with_scoped_confirmation(self):
+        cookie, csrf = self.login()
+        form = {'csrf': csrf, 'action': 'save', 'platform': 'tiktok',
+                'label': 'Fixture account', 'cookie': 'sessionid=fixture-only'}
+        status, _, headers = self.request('account', cookie=cookie, form=form)
+        self.assertEqual((status, headers['Location']), (303, '/bot/accounts?platform=tiktok#tiktok'))
+        notice_cookie = headers['Set-Cookie'].split(';', 1)[0]
+        session = cookie + '; ' + notice_cookie
+        status, body, _ = self.request('features', cookie=session)
+        self.assertEqual(status, 200)
+        self.assertNotIn('Account pool updated.', body)
+        status, body, headers = self.request('accounts?platform=tiktok', cookie=session)
+        self.assertEqual(status, 200)
+        self.assertIn('role="status">Account pool updated.', body)
+        self.assertIn('id="tiktok" open', body)
+        self.assertNotIn('id="youtube" open', body)
+        self.assertIn('Max-Age=0', headers['Set-Cookie'])
+        self.assertNotIn('sessionid=fixture-only', body)
+
+    def test_conflicting_youtube_inputs_return_to_editor(self):
+        from requests_toolbelt import MultipartEncoder
+
+        cookie, csrf = self.login()
+        body = MultipartEncoder({'csrf': csrf, 'platform': 'youtube', 'cookie': 'synthetic-paste',
+                                 'youtube_cookie_file': ('cookies.txt', 'synthetic-file', 'text/plain')})
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
+        try:
+            conn.request('POST', '/bot/account', body.to_string(), {'Content-Type': body.content_type,
+                         'Origin': self.c.ORIGIN, 'Cookie': cookie})
+            reply = conn.getresponse()
+            page = reply.read().decode()
+            self.assertEqual(reply.status, 400)
+            self.assertIn('Choose either an upload or pasted cookies.', page)
+            self.assertIn('href="/bot/accounts?platform=youtube#youtube"', page)
+            self.assertNotIn('synthetic-', page)
+        finally:
+            conn.close()
+        self.assertNotIn('Account pool updated.', self.request('accounts?platform=tiktok', cookie=cookie)[1])
+
+    def test_token_is_changed_only_by_its_own_form(self):
+        cookie, csrf = self.login()
+        token = '90009:' + 'example' * 5
+        status, _, headers = self.request('bot-token', cookie=cookie, form={'csrf': csrf, 'token': token})
+        self.assertEqual((status, headers['Location']), (303, '/bot/#bot-token'))
+        status, body, headers = self.request('bot-token', cookie=cookie, form={'csrf': csrf, 'token': '  '})
+        self.assertEqual(status, 400)
+        self.assertIn('href="/bot/#bot-token"', body)
+        self.assertNotIn('Set-Cookie', headers)
+        form = {'csrf': csrf, 'enabled': '1', 'token': '90008:' + 'stale' * 6}
+        self.assertEqual(self.request('bot-options', cookie=cookie, form=form)[0], 303)
+        self.assertEqual(self.c.rpc(self.c.SECRET_SOCKET, '/telegram')['token'], token)
+        self.assertNotIn(token, self.request('', cookie=cookie)[1])
+
     def test_feature_switches_are_authenticated_independent_and_persistent(self):
         from media_bot import features
         form = {'feature': 'download_twitter', 'enabled': '0'}

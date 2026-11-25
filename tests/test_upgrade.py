@@ -16,6 +16,7 @@ MODULE = Path(__file__).resolve().parents[1]/'deploy/upgrade.py'
 spec = importlib.util.spec_from_file_location('upgrade', MODULE)
 upgrade = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(upgrade)
+PREPARE = upgrade.prepare
 
 
 class UpgradeTests(unittest.TestCase):
@@ -52,7 +53,7 @@ class UpgradeTests(unittest.TestCase):
         self.health=self.stack.enter_context(patch.object(upgrade,'check'))
         self.stack.enter_context(patch.object(upgrade,'free_of_work',return_value=True))
 
-    def prepare(self,old,root,wheel,tag,sha,digest):
+    def prepare(self,old,root,wheel,tag,sha,digest,base=None):
         target=root/'candidate'
         target.mkdir(exist_ok=True)
         (target/upgrade.MANIFEST).write_text(json.dumps(dict(version=tag[1:],commit=sha)))
@@ -79,6 +80,64 @@ class UpgradeTests(unittest.TestCase):
         self.control.reset_mock()
         self.run_upgrade()
         self.control.assert_not_called()
+
+    def test_trial_uses_normal_drain_and_can_advance_to_its_stable_release(self):
+        build = '1.0.2.dev0'
+        wheel = self.wheel.with_name(f'telegram_social_downloader-{build}-py3-none-any.whl')
+        with zipfile.ZipFile(wheel, 'w') as archive:
+            archive.writestr(f'telegram_social_downloader-{build}.dist-info/METADATA',
+                             f'Name: telegram-social-downloader\nVersion: {build}\n')
+        filename = Path(self.temp.name) / 'config.json'
+        filename.write_text(json.dumps(self.config))
+        with self.assertRaisesRegex(ValueError, 'mode'):
+            upgrade.upgrade(filename, wheel, 'v' + build, self.sha)
+        with self.assertRaisesRegex(ValueError, 'provenance'):
+            upgrade.upgrade(filename, wheel, 'v'+build, self.sha, trial=True)
+        self.control.assert_not_called()
+        self.assertEqual(self.phase, [])
+        # The first installer retained this wheel even when its manifest omitted the digest.
+        stable = self.old / 'telegram_social_downloader-1.0.0-py3-none-any.whl'
+        with zipfile.ZipFile(stable, 'w') as archive:
+            archive.writestr('telegram_social_downloader-1.0.0.dist-info/METADATA',
+                             'Name: telegram-social-downloader\nVersion: 1.0.0\n')
+        (self.old/'.venv/bin').mkdir(parents=True)
+        with patch.object(upgrade, 'prepare', PREPARE), patch.object(upgrade, 'spawn'):
+            upgrade.upgrade(filename, wheel, 'v'+build, self.sha, trial=True)
+            self.assertEqual(self.phase, ['false','true'])
+            trial = self.current.resolve()
+            with tempfile.TemporaryDirectory() as other:
+                changed = Path(other) / wheel.name
+                changed.write_bytes(wheel.read_bytes())
+                with zipfile.ZipFile(changed, 'a') as updated:
+                    updated.writestr('extra.py','fixture')
+                with self.assertRaisesRegex(ValueError, 'different wheel digest'):
+                    upgrade.upgrade(filename,changed,'v'+build,self.sha,trial=True)
+            base = json.loads((trial/upgrade.MANIFEST).read_text())['trial_base']
+            self.assertEqual(base['wheel_sha256'], upgrade.wheel_info(stable,'v1.0.0'))
+            upgrade.upgrade(filename, stable, 'v1.0.0', '0'*40, allow_trial_rollback=True)
+            self.run_upgrade()
+            upgrade.upgrade(filename, wheel, 'v'+build, self.sha, trial=True)
+            self.assertEqual(self.current.resolve(), trial)
+            self.assertEqual(json.loads((trial/upgrade.MANIFEST).read_text())['trial_base']['version'], '1.0.1')
+            with self.assertRaisesRegex(ValueError, 'advance'):
+                upgrade.upgrade(filename, wheel, 'v'+build, '9'*40, trial=True)
+            self.assertLess(upgrade.version('v'+build), upgrade.version('v1.0.2'))
+            upgrade.upgrade(filename, self.wheel, self.tag, self.sha, allow_trial_rollback=True)
+            self.assertEqual(json.loads((self.current/upgrade.MANIFEST).read_text())['version'], '1.0.1')
+
+    def test_manual_trial_return_requires_the_recorded_stable_commit_and_digest(self):
+        self.tag='v1.0.1'
+        metadata = dict(version='1.2.0.dev0', commit='0'*40, trial_base=dict(version='1.0.1', commit=self.sha,
+                        wheel_sha256=upgrade.wheel_info(self.wheel, self.tag)))
+        (self.old/upgrade.MANIFEST).write_text(json.dumps(metadata))
+        cfg = Path(self.temp.name)/'config.json'
+        cfg.write_text(json.dumps(self.config))
+        with self.assertRaisesRegex(ValueError, 'advance'):
+            upgrade.upgrade(cfg, self.wheel, self.tag, self.sha)
+        with self.assertRaisesRegex(ValueError, 'advance'):
+            upgrade.upgrade(cfg, self.wheel, self.tag, '9'*40, allow_trial_rollback=True)
+        upgrade.upgrade(cfg, self.wheel, self.tag, self.sha, allow_trial_rollback=True)
+        self.assertEqual(self.phase, ['false','true'])
 
     def test_health_failure_restores_previous_code_and_admission(self):
         self.health.side_effect=[None,RuntimeError('unhealthy candidate'),None]

@@ -1,0 +1,94 @@
+:root {
+  color-scheme: light;
+  --ink: #172a35; --muted: #455d69; --line: #d0dde0;
+  --teal: #075967; --tint: #e2f1f1; --surface: #f3f7f7;
+  font: 100%/1.5 Inter, system-ui, sans-serif;
+  color: var(--ink); background: var(--surface);
+}
+* { box-sizing: border-box }
+body, h1, h2, h3, p, dl, dd { margin: 0 }
+a { color: var(--teal); text-underline-offset: .2em }
+a:hover { text-decoration-thickness: 2px }
+:focus-visible { outline: 3px solid #00798b; outline-offset: 3px }
+.shell { max-width: 88rem; min-height: 100vh; margin: auto; display: grid; grid-template-columns: 15rem minmax(0, 1fr) }
+.rail { background: #fff; border-inline: 1px solid var(--line); padding: 2rem 1rem; display: flex; flex-direction: column; gap: 1.5rem }
+.product { color: var(--ink); text-decoration: none; font-weight: 750; font-size: 1.1rem; line-height: 1.35 }
+.rail .product { padding: .5rem .7rem; max-width: 13rem }
+.rail nav { display: grid; gap: .22rem }
+.rail nav a { color: #344e59; padding: .62rem .75rem; border-radius: .4rem; text-decoration: none; font-weight: 550 }
+.rail nav a:hover { background: var(--surface) }
+.rail nav a[aria-current] { color: #074d56; background: var(--tint); box-shadow: inset 3px 0 var(--teal); font-weight: 700 }
+.rail > form { border-top: 1px solid var(--line); padding: 1rem .55rem }
+main { min-width: 0; overflow-wrap: anywhere; padding: clamp(1.25rem, 4vw, 3.5rem); width: 100%; max-width: 66rem }
+main:focus:not(:focus-visible) { outline: 0 }
+h1, h2, h3 { line-height: 1.25; text-wrap: balance }
+h1 { font-size: clamp(1.75rem, 4vw, 2.35rem); letter-spacing: -.035em; margin-bottom: 1.25rem }
+h2 { font-size: 1.28rem; letter-spacing: -.012em }
+h3 { font-size: 1.04rem; margin: 1.4rem 0 .45rem }
+section, details.pool, .entry-card { background: white; border: 1px solid var(--line); border-radius: .7rem; padding: clamp(1rem, 2.4vw, 1.55rem); margin: .9rem 0 }
+.section-head, .record, .feature-row { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: .55rem 1rem }
+.section-head h2, .record p, .feature-row p, .feature-row h3 { margin: 0 }
+.record, .feature-row { padding: .85rem 0 }
+.record + .record, .feature-row + .feature-row { border-top: 1px solid var(--line) }
+.record-info, .feature-copy { flex: 1 1 12rem; min-width: 0 }
+.actions { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem }
+.muted, dt, section > p, details > p { color: var(--muted) }
+section > p, details > p { margin: .55rem 0 .8rem }
+.state { display: inline-block; padding: .18rem .55rem; border-radius: .3rem; background: #eef1f3; color: #364c59; font-size: .9rem; font-weight: 600; max-width: 100% }
+.state.on { background: #def1e8; color: #17533e }
+.state.warn { background: #fff0ce; color: #6e490d }
+.metrics, .field-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%, 10rem),1fr)); gap: .7rem 1rem }
+.metrics { margin-top: 1rem }
+.metrics div { padding: .45rem 0 }
+dt { font-size: .9rem }
+dd { font-weight: 650; margin-top: .15rem }
+label { display: block; margin: .8rem 0; font-weight: 550 }
+.check { display: flex; align-items: center; gap: .65rem; min-height: 2.75rem; margin: .2rem 0 }
+input, select, textarea, button { font: inherit; max-width: 100%; border: 1px solid #899fa7; border-radius: .38rem }
+input:not([type=hidden],[type=checkbox]), select, textarea { display: block; width: min(100%,34rem); margin-top: .3rem; padding: .55rem .65rem; min-height: 2.75rem; color: var(--ink); background: white }
+input[type=checkbox] { accent-color: var(--teal); width: 1.15rem; height: 1.15rem; flex: none }
+textarea { resize: vertical }
+button { background: var(--teal); color: white; border-color: var(--teal); font-weight: 600; min-height: 2.75rem; padding: .48rem .9rem; cursor: pointer }
+button:hover { filter: brightness(.94) }
+button.secondary { background: white; border-color: #879da5; color: #224953 }
+button.danger { background: white; border-color: #b77b78; color: #922d2a }
+button + button { margin-inline-start: .25rem }
+.actions button { margin: 0 }
+.field-grid label { min-width: 0 }
+.notice, [role=alert], .callout { padding: .75rem 1rem; border-inline-start: 3px solid; border-radius: .25rem; margin: .75rem 0 }
+.notice { position: sticky; top: .4rem; z-index: 1; background: #e1f2e9; color: #174d38; box-shadow: 0 1px 4px #29463420 }
+main:has(.notice) :is(:target, button, input, summary, a) { scroll-margin-top: 4.5rem }
+[role=alert] { background: #ffede8; color: #812a24 }
+.callout { background: #fff2d8; color: #593f0c }
+details { padding: .55rem 0 }
+summary { cursor: pointer; font-weight: 650; color: var(--teal); padding: .6rem .2rem; min-height: 2.75rem }
+summary .muted { font-size: .93rem; font-weight: 450; margin-left: .5rem }
+details[open] > summary { margin-bottom: .35rem }
+details.pool > summary { font-size: 1.1rem }
+details.pool { padding-block: .65rem }
+details.pool[open] { padding-bottom: 1.35rem }
+ul { padding-left: 1.4rem }
+li { margin: .55rem 0 }
+fieldset { min-width: 0; border: 1px solid var(--line); margin: 1rem 0; padding: .8rem }
+.entry { max-width: 29rem; padding: 1.5rem; margin: clamp(2rem, 10vh, 7rem) auto }
+.entry-card { padding: clamp(1rem, 3vw, 2rem) }
+.entry-card button { width: 100%; margin-top: .5rem }
+.skip { position: absolute; left: .5rem; top: .5rem; transform: translateY(-170%); background: white; padding: .5rem; z-index: 1 }
+.skip:focus { transform: none }
+:target { scroll-margin-top: 1rem }
+@media (min-width: 49.01rem) and (min-height: 37rem) {
+  .rail { position: sticky; top: 0; align-self: start; min-height: 100vh }
+}
+@media (max-width: 49rem) {
+  .shell { display: block }
+  .rail { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: .6rem; border: 0; border-bottom: 1px solid var(--line); padding: .8rem 1rem }
+  .rail .product { max-width: none; padding: 0 }
+  .rail > form { grid-row: 1; grid-column: 2; padding: 0; border: 0 }
+  .rail nav { grid-column: 1 / -1; grid-row: 2; grid-template-columns: repeat(3, minmax(0,1fr)); gap: .22rem }
+  .rail nav a { display: flex; align-items: center; padding: .45rem; font-size: .94rem; line-height: 1.25; min-height: 2.75rem }
+  main { padding: 1.4rem 1rem }
+}
+@media (max-width: 23rem) {
+  .rail nav { grid-template-columns: repeat(2,minmax(0,1fr)) }
+  .feature-copy { flex-basis: 100% }
+}

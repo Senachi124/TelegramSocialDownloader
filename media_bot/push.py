@@ -127,37 +127,66 @@ def dispatch(entry, request, fd, send=None, slug=None):
 
 
 def web_panel(hidden):
-    sections = []
+    from .admin import views as layout
+
+    configured = providers()
+    if not configured:
+        return ('<section><h2>No subscription providers configured</h2>'
+                '<p>To send Fanclub updates, install the optional Takaneko provider on your server.</p></section>')
+
     with core.db() as db:
-        users = list(db.execute('SELECT id,name FROM bot_users ORDER BY id'))
-    for slug, entry in providers().items():
-        section = '<h3>' + html.escape(slug) + '</h3>'
+        users = {uid: (name or 'Unnamed user', state)
+                 for uid, name, state in db.execute('SELECT id,name,state FROM bot_users')}
+    eligible = {uid for uid, (_, state) in users.items() if state in ('owner', 'approved')}
+    sections = []
+    for slug, entry in configured.items():
+        title = 'Takaneko Fanclub' if slug == 'takaneko' else slug
+        section = f'<section id="provider-{slug}"><h2>{html.escape(title)}</h2>'
         try:
             listing = control(entry, 'list')
-            subscribed = set(listing['users'])
+            subscribers = listing['users']
+            if not isinstance(subscribers, list) or any(type(uid) is not int or not 0 < uid < 2**63 for uid in subscribers):
+                raise ValueError('Invalid subscriber list')
+            subscribed = set(subscribers)
         except (OSError, ValueError, KeyError):
-            sections.append(section + '<p>Subscription service unavailable.</p>')
+            sections.append(section + '<p>Subscriber list unavailable. Check the provider service and reload this page.</p></section>')
             continue
-        health = HEALTH.get(core.get_setting('push_health.' + slug, 'ok'))
-        if health:
-            section += '<p>' + html.escape(health) + '</p>'
+
+        health = core.get_setting('push_health.' + slug, 'ok')
+        if health in HEALTH and health != 'ok':
+            section += f'<p class="state warn">{html.escape(HEALTH[health])}</p>'
+        provider = hidden + layout.hidden_field('provider', slug)
         if slug == 'takaneko' and 'set_session' in listing.get('capabilities', []):
-            from .admin import views as layout
-            controls = layout.hidden_field('provider', slug)
-            controls += layout.field('session', 'Fanclub session or browser cookies (JSON)', 'password',
-                                     attrs='required autocomplete="new-password" spellcheck="false"')
+            section += '<h3>Fanclub session</h3>'
+            controls = layout.field('session', 'Session or browser cookies (JSON)', 'password',
+                                    attrs='required autocomplete="new-password" spellcheck="false"')
             controls += layout.button('Save Fanclub session', 'set_session')
-            section += layout.form('subscriptions', hidden, controls)
-        for uid, name in users:
-            enabled = uid in subscribed
-            section += (f'<form method="post" action="{core.BASE}subscriptions">{hidden}'
-                        f'<input type="hidden" name="provider" value="{slug}">'
-                        f'<input type="hidden" name="user_id" value="{uid}">'
-                        f'<span>{html.escape(name or str(uid))} ({uid})</span> '
-                        f'<button name="enabled" value="{int(not enabled)}">'
-                        f'{"Unsubscribe" if enabled else "Subscribe"}</button></form>')
-        sections.append(section)
-    return '<section id="subscriptions"><h2>Subscriptions</h2>' + (''.join(sections) or '<p>No providers configured.</p>') + '</section>'
+            section += layout.form('subscriptions', provider, controls)
+            section += f'<p>Enable or pause Fanclub updates in <a href="{core.BASE}features#takaneko">Features</a>.</p>'
+
+        section += '<h3>Recipients</h3>'
+        if not eligible and not subscribed:
+            section += f'<p>Approve a user in <a href="{core.BASE}users#user-access">Users &amp; groups</a> to add a recipient.</p>'
+        for uid in sorted(eligible | subscribed, key=lambda uid: (uid not in subscribed, uid)):
+            name, state = users.get(uid, ('Unregistered user', 'unregistered'))
+            active = uid in subscribed
+            if active and uid not in eligible:
+                reason = {'revoked': 'access revoked', 'rejected': 'access rejected'}.get(state, 'approval required')
+                subscription, tone = f'Subscribed · {reason}', ' warn'
+            elif active:
+                subscription, tone = 'Subscribed', ' on'
+            else:
+                subscription, tone = 'Not subscribed', ''
+            verb = 'Unsubscribe' if active else 'Subscribe'
+            fields = provider + layout.hidden_field('user_id', uid) + layout.hidden_field('enabled', int(not active))
+            action = layout.button(verb, kind='secondary' if active else '',
+                                   aria_label=f'{verb} {name} ({uid}) · {title}')
+            section += (f'<div class="record"><div class="record-info"><strong>{html.escape(name)}</strong>'
+                        f'<p class="muted">Telegram ID {uid}</p></div>'
+                        f'<span class="state{tone}">{html.escape(subscription)}</span>'
+                        + layout.form('subscriptions', fields, action) + '</div>')
+        sections.append(section + '</section>')
+    return ''.join(sections)
 
 
 def web_post(form):

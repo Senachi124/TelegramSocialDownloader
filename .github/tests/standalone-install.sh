@@ -3,7 +3,7 @@
 set -euo pipefail
 : "${RUNNER_TEMP:?}"
 trap 'sudo journalctl --no-pager -n 60 -u "telegram-social-*.service"' ERR
-sudo ./deploy/install.sh dist/*.whl "$GITHUB_SHA"
+sudo ./deploy/install.sh --allow-development dist/*.whl "$GITHUB_SHA"
 sudo python3 - <<'PY'
 import hashlib
 from pathlib import Path

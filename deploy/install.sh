@@ -3,10 +3,15 @@
 set -euo pipefail
 umask 022
 [[ $(id -u) == 0 ]] || { echo "Run as root." >&2; exit 1; }
-[[ $# == 2 && $2 =~ ^[a-f0-9]{40}$ ]] || { echo "Usage: install.sh /path/to/release.whl FULL_RELEASE_COMMIT" >&2; exit 2; }
+allow_dev=false
+if [[ ${1:-} == --allow-development ]]; then allow_dev=true; shift; fi
+[[ $# == 2 && $2 =~ ^[a-f0-9]{40}$ ]] || { echo "Usage: install.sh [--allow-development] /path/to/release.whl FULL_RELEASE_COMMIT" >&2; exit 2; }
 wheel=$(realpath -e -- "$1")
 name=$(basename -- "$wheel")
-[[ $name =~ ^telegram_social_downloader-([0-9]+\.[0-9]+\.[0-9]+)-py3-none-any\.whl$ ]] || { echo "Expected a Telegram Social Downloader release wheel." >&2; exit 2; }
+format='^telegram_social_downloader-([0-9]+\.[0-9]+\.[0-9]+'
+if $allow_dev; then format+='(\.dev[0-9]+)?'; fi
+format+=')-py3-none-any\.whl$'
+[[ $name =~ $format ]] || { echo "Expected a Telegram Social Downloader release wheel." >&2; exit 2; }
 version=${BASH_REMATCH[1]}
 base=/opt/telegram-social-downloader
 release=$base/releases/telegram-$version
@@ -43,8 +48,9 @@ runuser -u telegram-build -- "$release/.venv/bin/python" -I -c \
 chown -hR root:root "$release"
 chmod -R go-w "$release"
 chmod 0755 "$release"
+digest=$(sha256sum "$release/$name" | cut -d' ' -f1)
 cat > "$release/DEPLOYMENT-MANIFEST.json" <<EOF
-{"version":"$version","commit":"$2"}
+{"version":"$version","commit":"$2","wheel_sha256":"$digest"}
 EOF
 install -d -o telegram-social -g telegram-social -m 0700 "$data"
 install -d -o telegram-credentials -g telegram-credentials -m 0700 "$secret_dir"

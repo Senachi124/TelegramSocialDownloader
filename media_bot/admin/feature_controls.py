@@ -11,11 +11,12 @@ def _row(hidden, key, label, state, action=None, detail=''):
     if action is not None:
         verb = 'Enable' if action else 'Pause'
         fields = hidden + views.hidden_field('feature', key) + views.hidden_field('enabled', int(action))
-        control = views.form('features', fields,
-                             f'<button type="submit" aria-label="{verb} {escape(label, quote=True)}">{verb}</button>')
-    style = 'feature-on' if state == 'Enabled' else 'feature-state'
-    return (f'<div class="feature-row" id="{key}" tabindex="-1"><div><h3>{escape(label)}</h3>'
-            f'<p class="{style}">{state}</p>{detail}</div>{control}</div>')
+        control = views.form('features', fields, views.button(verb, kind='' if action else 'secondary',
+                                                             aria_label=f'{verb} {label}'))
+    tone = ' on' if state == 'Enabled' else (' warn' if state == 'Unavailable' else '')
+    return (f'<div class="feature-row" id="{key}" tabindex="-1"><div class="feature-copy">'
+            f'<h3>{escape(label.removesuffix(" downloads"))}</h3>{detail}</div>'
+            f'<span class="state{tone}">{escape(state)}</span>{control}</div>')
 
 
 def _fanclub_state(entry, operation, **fields):
@@ -67,7 +68,7 @@ def panel(hidden):
     translation = flags['translation']
     bot_status = ''
     if not core.get_setting('enabled', False):
-        bot_status = f'<p>Telegram polling is paused. <a href="{core.BASE}">Manage the bot connection</a>.</p>'
+        bot_status = f'<p class="callout">Telegram polling is paused. <a href="{core.BASE}#bot-operation">Manage the bot connection</a>.</p>'
     return (bot_status + '<section><h2>Media downloads</h2>'
             '<p>Pausing a platform holds its queued downloads. An item already in progress can finish.</p>'
             + ''.join(downloads) + '</section><section><h2>Telegram tools</h2>'
@@ -99,4 +100,3 @@ def update(form):
         features.set_enabled(key, enabled)
     else:
         raise FormError('Unknown feature.')
-    return 'features#' + key

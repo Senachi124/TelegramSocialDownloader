@@ -2,13 +2,10 @@
 
 ## Unreleased
 
-## 1.2.2.dev2 — 2026-11-26 (v1.2.2_2 trial)
+## 1.2.2 — 2026-11-26
 
-- Save eligible YouTube session cookie updates when the same signed-in response includes partitioned visitor cookies. The account pool skips those visitor updates and preserves any existing unpartitioned cookies.
-
-## 1.2.2.dev1 — 2026-11-26 (v1.2.2_1 trial)
-
-- Retain new YouTube cookies from successful account-bound downloads and scheduled cookie checks when YouTube confirms the session is signed in. Each update applies only to the selected account and cookie revision. An expired or revoked login still needs a fresh browser export.
+- Save new YouTube session cookies after a successful account-bound download or scheduled check when YouTube confirms the account is signed in. Updates apply only to the checked account and revision. Expired or revoked sessions need a fresh browser export.
+- Skip partitioned YouTube visitor cookies while saving eligible session cookie updates from the same response. Existing unpartitioned visitor cookies are preserved.
 
 ## 1.2.1 — 2026-11-26
 

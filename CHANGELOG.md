@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.2.2.dev1 — 2026-11-26 (v1.2.2_1 trial)
+
+- Retain new YouTube cookies from successful account-bound downloads and scheduled cookie checks when YouTube confirms the session is signed in. Each update applies only to the selected account and cookie revision. An expired or revoked login still needs a fresh browser export.
+
 ## 1.2.1 — 2026-11-26
 
 - Instagram download messages, account pool checks and the Error log distinguish the bot's local limits from a cooldown caused by an Instagram HTTP 429. Downloads show the Hong Kong retry time, including for batches and after a restart. Older cooldowns without a recorded cause are labelled accordingly.

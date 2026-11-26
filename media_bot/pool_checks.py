@@ -246,6 +246,8 @@ def _run(check):
         root.mkdir(mode=0o700)
     try:
         job = {'id': check['id'], 'platform': platform, 'url': _post(platform, check['url']), 'mode': 'post'}
+        if platform == 'youtube' and not public:
+            job.update(account_id=selected['id'], account_revision=revision)
         deadline = time.monotonic() + CAPTURE_TIMEOUT
         result = worker.capture(job, selected.get('cookies', {}), root=root,
                                 should_cancel=lambda: frozen() or not c.get_setting('enabled', False),
@@ -253,6 +255,8 @@ def _run(check):
         if result is None:
             return 'interrupted', FORM_ERRORS['disabled']
         outcome = _outcome(result, root, platform=platform, public=bool(public), deadline=deadline)
+        if platform == 'youtube' and not public and result.get('youtube_updated_revision') == revision + 1:
+            selected = dict(selected, revision=revision + 1)
         try:
             pool, item = _current(platform, selected)
         except (OSError, ValueError, KeyError):

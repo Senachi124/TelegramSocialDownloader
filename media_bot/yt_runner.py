@@ -76,6 +76,10 @@ def run(payload):
     youtube=platform=='youtube'
     preferences=payload.get('preferences') or {}
     cookies=payload.get('cookies',{})
+    session = None
+    if youtube and cookies and payload.get('youtube_account'):
+        from .youtube_session import DownloadSession
+        session = DownloadSession(payload['youtube_account'], cookies)
     video_id=None
     stream_bytes={}
     result={'engine':'yt-dlp','code':1,'retry_at':0,'auth_required':False,
@@ -86,13 +90,18 @@ def run(payload):
         if code in (401,403,404,429):result['http_errors'].append(code)
         if code==429:
             value=response.headers.get('Retry-After','900')
-            try:until=time.time()+float(value)
-            except (ValueError,TypeError):
-                try:until=parsedate_to_datetime(value).timestamp()
-                except Exception:until=time.time()+900
-            until=max(time.time()+900,until)
+            if youtube:
+                from .youtube_maintenance import extend_cooldown
+                until = extend_cooldown(value)
+            else:
+                try:until=time.time()+float(value)
+                except (ValueError,TypeError):
+                    try:until=parsedate_to_datetime(value).timestamp()
+                    except Exception:until=time.time()+900
+                until=max(time.time()+900,until)
+                c.setting(platform+'_cooldown',until)
             result.update(retry_at=until,wait_reason='platform')
-            c.setting(platform+'_cooldown',until);response.close();raise StopCapture()
+            response.close();raise StopCapture()
     def classify(message):
         message=message.lower()
         if youtube and any(s in message for s in ('not a bot', 'not a robot')):result['failure']='bot_verification'
@@ -122,6 +131,8 @@ def run(payload):
             except HTTPError as error:
                 record_http(error.response);raise
             record_http(response)
+            if session is not None:
+                session.observe(request, response)
             try:download_size.declared(response.headers)
             except download_size.DownloadTooLarge:
                 response.close();raise
@@ -206,7 +217,12 @@ def run(payload):
             elif 401 in result['http_errors']:result['failure']='login_required'
             elif 403 in result['http_errors']:result['failure']='forbidden'
             elif not result['failure']:result['failure']='extractor_error'
-        else:result['failure']=''
+        else:
+            result['failure']=''
+            if session is not None:
+                revision = session.save_if_verified()
+                if revision is not None:
+                    result['youtube_updated_revision'] = revision
         if youtube and cookies and result['failure']=='login_required':result['auth_required']=True
         result['finished']=time.time()
         temp=root/'result.tmp';temp.write_text(json.dumps(result));temp.replace(root/'result.json')

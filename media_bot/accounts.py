@@ -74,7 +74,10 @@ def edit(data,request,parse):
             if a['enabled'] or p['primary']==key:raise ValueError('Disable the account first')
             p['items'].remove(a)
         else:
-            a['enabled']=action=='enable'
+            enabled = action == 'enable'
+            if request['platform'] == 'youtube' and a['enabled'] != enabled:
+                a['revision'] += 1
+            a['enabled'] = enabled
             if action=='disable' and p['primary']==key:p['primary']=''
     elif action=='policy':
         value=request.get('policy')

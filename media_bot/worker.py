@@ -313,6 +313,8 @@ def _select_account(job, platform):
     if cookies:
         c.update(job['id'], account_id=credential['id'])
         job['account_id'] = credential['id']
+        if platform == 'youtube':
+            job['account_revision'] = credential['revision']
     return credential, cookies
 
 
@@ -337,9 +339,12 @@ def _report_account(platform, credential, result):
         outcome = 'failed'
     else:
         outcome = 'success'
+    revision = credential['revision']
+    if platform == 'youtube' and result.get('youtube_updated_revision') == revision + 1:
+        revision += 1
     with contextlib.suppress(Exception):
         c.rpc(c.SECRET_SOCKET, '/report', {
-            'platform': platform, 'id': credential['id'], 'revision': credential['revision'], 'outcome': outcome,
+            'platform': platform, 'id': credential['id'], 'revision': revision, 'outcome': outcome,
         })
 
 

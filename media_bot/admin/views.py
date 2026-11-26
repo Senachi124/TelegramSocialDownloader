@@ -196,7 +196,8 @@ def _account_edit(platform, entry, item=None):
     controls = field('label', 'Account name', value=item['label'] if item else '',
                      attrs='maxlength="60" required')
     if platform == 'youtube':
-        hint = 'Paste a Netscape cookies.txt export or select the file below.'
+        hint = ('Paste a Netscape cookies.txt export or select the file below. '
+                'Active sessions save verified cookie updates automatically. If sign-in expires, upload a new export.')
     elif platform == 'twitter':
         hint = 'Paste a Cookie header, browser cookie JSON or Netscape cookies.txt export.'
     else:

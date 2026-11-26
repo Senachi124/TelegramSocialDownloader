@@ -71,18 +71,13 @@ def run(job, cookies, *, root, should_cancel, stop, timeout):
     try:
         snapshot = json.loads(job.get('preferences') or '{}')
         preferences = snapshot.get(job['platform'], {}) if isinstance(snapshot, dict) else {}
-        process.stdin.write(
-            json.dumps(
-                {
-                    'platform': job['platform'],
-                    'mode': job['mode'],
-                    'url': job['url'],
-                    'root': str(root),
-                    'cookies': cookies,
-                    'preferences': preferences,
-                }
-            )
-        )
+        payload = {
+            'platform': job['platform'], 'mode': job['mode'], 'url': job['url'],
+            'root': str(root), 'cookies': cookies, 'preferences': preferences,
+        }
+        if job['platform'] == 'youtube' and cookies and job.get('account_revision') is not None:
+            payload['youtube_account'] = {'id': job['account_id'], 'revision': job['account_revision']}
+        process.stdin.write(json.dumps(payload))
         process.stdin.close()
         while process.poll() is None:
             if _oversized_download(root):

@@ -123,6 +123,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(c.get_setting('youtube_cooldown'), result['retry_at'])
         self.assertIsNone(c.get_setting('tiktok_cooldown'))
 
+    def test_single_and_batch_youtube_downloads_bind_refresh_to_selected_revision(self):
+        url = 'https://youtu.be/Abc123_X-yZ'
+        self.broker.return_value = {'id': 'yt-test', 'revision': 4, 'cookies': {'synthetic': True}}
+        single = self.job(url)
+        batch = c.job_by_id(c.enqueue_batch('two-videos', 123, [url, url], 10))
+        result = {'retry_at': 0, 'auth_required': False, 'code': 0, 'files': [], 'youtube_updated_revision': 5}
+        with patch.object(w, 'capture', return_value=result) as capture, patch.object(w, 'disk_ok'):
+            self.assertTrue(w.download(single))
+            w.process_batch(batch)
+        self.assertEqual([(call.args[0]['account_id'], call.args[0]['account_revision'])
+                          for call in capture.call_args_list], [('yt-test', 4), ('yt-test', 4)])
+        reports = [call.args[2] for call in self.broker.call_args_list if call.args[1] == '/report']
+        self.assertEqual([(report['id'], report['revision']) for report in reports], [('yt-test', 5), ('yt-test', 5)])
+
     def test_youtube_non_video_links_are_rejected(self):
         for url in ('https://www.youtube.com/playlist?list=PL123',
                     'https://www.youtube.com/@example/shorts',

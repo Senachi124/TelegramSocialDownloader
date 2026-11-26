@@ -88,7 +88,9 @@ Open the configured HTTPS URL to sign in. Sessions expire after three days. Conf
 
 The official Telegram API is the default. A self-hosted Local Bot API increases the direct-delivery limit to 500 MB. Larger downloads up to 2,000 MB can be delivered through a two-hour link. Set `MEDIA_BOT_API_BASE` to an explicit loopback HTTP endpoint and enable `MEDIA_BOT_LOCAL_FILE_UPLOADS` only if the API daemon can read the worker’s media directory. See [Local Bot API setup](docs/local-api.md).
 
-Put media and temporary files on the same filesystem under `MEDIA_BOT_DATA`. The worker checks available space before downloading. Set `MEDIA_BOT_STORAGE_UUID` to require a specific filesystem. Run `telegram-social-downloader --env-file .env refresh-cookies` periodically to check enabled Instagram sessions.
+Put media and temporary files on the same filesystem under `MEDIA_BOT_DATA`. The worker checks available space before downloading. Set `MEDIA_BOT_STORAGE_UUID` to require a specific filesystem. Run `telegram-social-downloader --env-file .env refresh-cookies` periodically to check enabled Instagram and YouTube sessions.
+
+For YouTube, successful downloads and scheduled checks can save new cookies from YouTube after it confirms the session is signed in. Replacing cookies or disabling the account takes precedence over an in-flight update. If the login expires or is revoked, upload a fresh `cookies.txt` under **Account pools → YouTube → Edit account**.
 
 ### Takaneko Fanclub
 

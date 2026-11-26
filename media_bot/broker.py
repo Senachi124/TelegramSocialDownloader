@@ -190,12 +190,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         try:
             if self.path not in ('/settings','/accounts','/select','/report','/translation/keys','/local-api',
-                                 '/instagram-refresh/snapshot','/instagram-refresh/result'):raise ValueError('Invalid endpoint')
+                                 '/instagram-refresh/snapshot','/instagram-refresh/result',
+                                 '/youtube-refresh/snapshot','/youtube-refresh/result'):raise ValueError('Invalid endpoint')
             n=int(self.headers.get('Content-Length','0'))
             if not 0<n<=300000:raise ValueError('資料太大')
             p=json.loads(self.rfile.read(n))
             if self.path=='/local-api':return self.reply(save_local_api(p))
             old=load()
+            if self.path.startswith('/youtube-refresh/'):
+                from . import youtube_cookies
+                if self.path.endswith('/snapshot'):
+                    return self.reply(youtube_cookies.refresh_snapshot(old, p))
+                result = youtube_cookies.apply_refresh(old, p)
+                if result['status'] == 'updated':
+                    save(old)
+                return self.reply(result)
             if self.path.startswith('/instagram-refresh/'):
                 from .instagram import maintenance
                 if self.path.endswith('/snapshot'):

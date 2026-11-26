@@ -1,2 +1,2 @@
 """Standalone Telegram social-media downloader."""
-__version__ = "1.2.2.dev1"
+__version__ = "1.2.2.dev2"

@@ -89,6 +89,7 @@ def _as_cookie(item):
 _FIELDS = {'domain', 'include_subdomains', 'path', 'secure', 'expires', 'name', 'value', 'http_only'}
 _ORIGIN_SCOPES = {'www.youtube.com', '.www.youtube.com', '.youtube.com'}
 _LOGIN_COOKIES = AUTH_NAMES | {'HSID', 'SSID', 'APISID', 'SIDCC', 'LOGIN_INFO', 'LSID', 'OSID'}
+_PARTITIONED_VISITORS = {'VISITOR_INFO1_LIVE', 'VISITOR_PRIVACY_METADATA'}
 
 
 def _records(data, *, require_live=True):
@@ -187,12 +188,21 @@ def apply_response(cookies, url, headers):
         total_size += len(line)
         if (len(line) > 20000 or total_size > 131072 or any(ord(c) < 32 or ord(c) > 126 for c in line) or
                 re.search(r",\s*[!#$%&'*+.^_`|~\w-]+=", line) or
-                re.search(r';\s*(?:partitioned|sameparty|port)(?:\s*(?:;|=|$))', line, re.I)):
+                re.search(r';\s*(?:sameparty|port)(?:\s*(?:;|=|$))', line, re.I)):
             raise ValueError(ERROR)
-        attributes = [part.partition('=')[0].strip().lower()
-                      for part in line.split(';')[1:] if part.strip()]
+        pair, *parts = (part.strip() for part in line.split(';'))
+        attributes = [part.partition('=')[0].strip().lower() for part in parts if part]
         if len(attributes) != len(set(attributes)):
             raise ValueError(ERROR)
+        if 'partitioned' in attributes:
+            name, separator, value = pair.partition('=')
+            flags = {part.lower() for part in parts}
+            if (name not in _PARTITIONED_VISITORS or not separator or len(value) > 16384 or
+                    any(c in value for c in (' ', '"', ',', '\\')) or not {'secure', 'partitioned'} <= flags):
+                raise ValueError(ERROR)
+            # The Netscape pool has no partition key. Even a deletion applies
+            # only to the browser partition, never to its unpartitioned namesake.
+            continue
         safe['Set-Cookie'] = line
     jar = CookieJar(policy=DefaultCookiePolicy(strict_ns_domain=DefaultCookiePolicy.DomainStrictNonDomain,
                                                strict_ns_set_path=True))

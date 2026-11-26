@@ -17,6 +17,7 @@ EXPORT = ('#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t4102444800\tSAPISID\told-synth
           'www.youtube.com\tFALSE\t/\tTRUE\t4102444800\tPREF\tfixture-pref\n'
           'music.youtube.com\tFALSE\t/\tTRUE\t4102444800\tKEEP\tfixture-other-host\n')
 ROTATE = 'SAPISID=new-synthetic; Domain=youtube.com; Path=/; Secure; HttpOnly; Max-Age=36000'
+VISITOR = 'VISITOR_INFO1_LIVE=partition-fixture; Domain=.youtube.com; Path=/; Secure; HttpOnly; Partitioned'
 
 
 def headers(*cookies):
@@ -64,6 +65,20 @@ class FirstPartyCookieTests(unittest.TestCase):
         result['items'][0]['value'] = 'mutated-copy'
         self.assertEqual(self.original, self.baseline)
 
+    def test_partitioned_visitors_do_not_replace_or_expire_unpartitioned_cookies(self):
+        original = yc.parse(EXPORT + '.youtube.com\tTRUE\t/\tTRUE\t4102444800\tVISITOR_INFO1_LIVE\tunpartitioned\n')
+        other = VISITOR.replace('VISITOR_INFO1_LIVE', 'VISITOR_PRIVACY_METADATA')
+        deletion = VISITOR.replace('=partition-fixture;', '=; Max-Age=0;')
+        for only_visitor in (VISITOR, deletion):
+            with self.subTest(only_visitor=only_visitor):
+                result = yc.apply_response(original, URL, headers(only_visitor, other))
+                self.assertEqual(result, original)
+                result = yc.apply_response(original, URL, headers(only_visitor, ROTATE, other))
+                self.assertEqual({row['name']:row['value'] for row in result['items']}, {
+                    'VISITOR_INFO1_LIVE': 'unpartitioned', 'SAPISID': 'new-synthetic',
+                    'PREF': 'fixture-pref', 'KEEP': 'fixture-other-host',
+                })
+
     def test_unsafe_changes_are_rejected_as_a_unit(self):
         for bad in (
             ROTATE.replace('Secure; ', ''), ROTATE.replace('HttpOnly; ', ''),
@@ -74,10 +89,14 @@ class FirstPartyCookieTests(unittest.TestCase):
             'PREF=new; Domain=.youtube.com; Path=/; Secure',
             '__Host-TEST=wrong; Domain=youtube.com; Path=/; Secure',
             'BAD=partitioned; Path=/; Secure; Partitioned',
+            ROTATE + '; Partitioned', VISITOR.replace('Secure; ', ''),
+            VISITOR.replace('; Partitioned', '; Partitioned=1'), VISITOR + '; PARTITIONED',
+            VISITOR.replace('=partition-fixture', ''), VISITOR + '; SameParty',
+            VISITOR + ', SAPISID=ambiguous',
             'BAD=x, other=y; Secure', 'BAD=injected\nheader',
         ):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                yc.apply_response(self.original, URL, headers('OPTIONAL=foo; Secure', bad))
+                yc.apply_response(self.original, URL, headers(VISITOR, 'OPTIONAL=foo; Secure', bad))
         self.assertEqual(self.original, self.baseline)
 
     def test_sibling_domain_expiry_cannot_remove_an_existing_cookie(self):

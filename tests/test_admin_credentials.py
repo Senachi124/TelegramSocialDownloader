@@ -9,6 +9,19 @@ with TemporaryDirectory() as bootstrap, patch.dict(os.environ, {'MEDIA_BOT_DATA'
 
 
 class CredentialViewTests(unittest.TestCase):
+    def test_instagram_account_displays_the_reported_upstream_limit(self):
+        data = {}
+        accounts.update_primary(data, 'instagram', {'fixture': 'value'})
+        item, = accounts.public_summary(data)['instagram']['items']
+        report = {'platform': 'instagram', 'id': item['id'], 'revision': item['revision']}
+        for reason, label in [('http_429', 'Instagram returned HTTP 429'),
+                              ('upstream_restriction', 'in its response body')]:
+            accounts.report(data, dict(report, outcome=reason))
+            saved, = accounts.public_summary(data)['instagram']['items']
+            self.assertIn(label, views._account_record('instagram', '', saved, True))
+        with self.assertRaises(ValueError):
+            accounts.report(data, dict(report, platform='twitter', outcome='http_429'))
+
     def test_pool_editing_and_download_check_states(self):
         data = accounts.public_summary({})
         data['instagram']['items'] = [dict(id='fixture', label='Photo <team>', enabled=True,

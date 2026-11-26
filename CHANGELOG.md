@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.2.1 — 2026-11-26
+
+- Instagram download messages, account pool checks and the Error log distinguish the bot's local limits from a cooldown caused by an Instagram HTTP 429. Downloads show the Hong Kong retry time, including for batches and after a restart. Older cooldowns without a recorded cause are labelled accordingly.
+
 ## 1.2.0 — 2026-11-25
 
 - Connect or switch Fanclub accounts with a single refresh token in **Takaneko subscriptions**. Use **Test connection** to verify the saved login, including while the provider is paused.

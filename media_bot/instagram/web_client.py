@@ -18,7 +18,7 @@ class WebStop(RuntimeError):
             self.diagnostic['status'] = status
         if redirect in ('login', 'verification', 'home', 'same_origin', 'external', 'invalid'):
             self.diagnostic['redirect'] = redirect
-        if kind in ('auth_required', 'rate_limited', 'upstream_redirect', 'upstream_http_error'):
+        if kind in ('auth_required', 'rate_limited', 'upstream_redirect', 'upstream_http_error', 'local_request_budget'):
             self.diagnostic['kind'] = kind
         suffix = ' '.join(f'{key}={value}' for key, value in self.diagnostic.items())
         super().__init__(message + (' [' + suffix + ']' if suffix else ''))
@@ -43,8 +43,12 @@ def redirect_kind(location):
 
 
 class WebClient:
-    def __init__(self, session, reserve, block, max_requests=120):
-        self.session, self.reserve, self.block = session, reserve, block
+    def __init__(self, session, reserve, block=None, max_requests=120, *, block_with_reason=None):
+        self.session, self.reserve = session, reserve
+        if block_with_reason is None and block is None:
+            raise TypeError('A cooldown callback is required')
+        self.block = block
+        self._block_with_reason = block_with_reason or (lambda seconds, reason: self.block(seconds))
         self.session.trust_env = False
         self.max_requests = max_requests
         self.count = 0
@@ -54,7 +58,7 @@ class WebClient:
         if path not in ('', 'api/graphql', 'graphql/query'):
             raise WebStop('unexpected_endpoint')
         if self.count >= self.max_requests:
-            raise WebStop('scan_request_budget_reached')
+            raise WebStop('scan_request_budget_reached', kind='local_request_budget')
         self.reserve()
         self.count += 1
         endpoint = {'': 'home', 'api/graphql': 'web_graphql', 'graphql/query': 'graphql_query'}[path]
@@ -64,7 +68,7 @@ class WebClient:
                 status = response.status_code
                 retry = response.headers.get('Retry-After', '')
                 if status == 429:
-                    self.block(max(900, int(retry) if re.fullmatch(r'\d{1,9}', retry) else 900))
+                    self._block_with_reason(max(900, int(retry) if re.fullmatch(r'\d{1,9}', retry) else 900), 'http_429')
                     raise WebStop('HttpError: 429 Too Many Requests; stopped without fallback',
                                   endpoint=endpoint, status=status, kind='rate_limited')
                 if status in (401, 403):
@@ -78,7 +82,7 @@ class WebClient:
                                   endpoint=endpoint, status=status, redirect=redirect,
                                   kind='auth_required' if authentication else 'upstream_redirect')
                 if status >= 400:
-                    self.block(900)
+                    self._block_with_reason(900, f'http_{status}')
                     raise WebStop('upstream_http_error; cooldown applied',
                                   endpoint=endpoint, status=status, kind='upstream_http_error')
                 chunks, size = [], 0
@@ -145,7 +149,7 @@ class WebClient:
         restricted = any(isinstance(message, str) and any(marker in message.lower() for marker in
             ('feedback_required', 'please wait a few minutes', 'too many requests', 'rate limit')) for message in messages)
         if restricted:
-            self.block(900)
+            self._block_with_reason(900, 'upstream_restriction')
             raise WebStop('Instagram restriction; cooldown applied without fallback',
                           endpoint='web_graphql' if web_api else 'graphql_query',
                           status=200, kind='rate_limited')

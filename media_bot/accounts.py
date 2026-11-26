@@ -117,7 +117,10 @@ def report(data,request):
     p=pool(data,request.get('platform'))
     a=next((a for a in p['items'] if a['id']==request.get('id')),None)
     outcome=request.get('outcome')
-    if outcome not in ('success','auth_required','access_error','failed','rate_limited'):raise ValueError('Invalid status')
+    allowed = ('success', 'auth_required', 'access_error', 'failed', 'rate_limited')
+    if request.get('platform') == 'instagram':
+        allowed += ('http_429', 'upstream_restriction')
+    if outcome not in allowed:raise ValueError('Invalid status')
     # A result from an in-flight old Cookie must not poison a newly updated Cookie.
     if a and a['revision']==request.get('revision'):
         a.update(last_result=outcome,last_result_at=time.time())

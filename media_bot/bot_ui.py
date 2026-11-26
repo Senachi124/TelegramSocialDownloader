@@ -7,6 +7,7 @@ import time
 from zoneinfo import ZoneInfo
 
 from . import core as c, access, accounts, limits
+from .instagram.limit_messages import describe as instagram_limit_message
 
 SHORT_DESCRIPTION = '下載 Instagram、TikTok、X、Threads 和 YouTube 的圖片與影片。貼上連結即可開始，支援混合平台批次下載。'
 DESCRIPTION = ('把社群連結傳給我，即可下載圖片與影片。\n\n'
@@ -137,8 +138,10 @@ def system_status(send,actor):
            '儲存空間剩餘：'+f'{shutil.disk_usage(c.DATA).free/1024**3:.1f} GiB',
            *[escape(STATES.get(state,state))+': '+str(count) for state,count in counts]]
     for platform in accounts.DOWNLOAD_PLATFORMS:
-        cooldown=c.get_setting(platform+'_cooldown',0)
-        if cooldown>time.time():lines.append(accounts.LABELS[platform]+' 冷卻至 '+date(cooldown))
+        cooldown, reason = c.platform_cooldown(platform)
+        if cooldown > time.time():
+            message = instagram_limit_message(reason) if platform == 'instagram' else accounts.LABELS[platform]+' 冷卻中'
+            lines.append(message+'，至 '+date(cooldown)+'（香港時間）')
     respond(send,actor,'\n'.join(lines),[[button('重新整理','system'),button('管理介面','admin')]])
 
 

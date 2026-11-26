@@ -5,6 +5,7 @@ import threading
 import time
 
 from . import core as c, error_log
+from .instagram.limit_messages import describe as instagram_limit_message
 
 INTERVAL = 5
 RESERVE = 5 * 1024 ** 3
@@ -21,6 +22,7 @@ REASONS = {
     'format': ('unsupported', 'format', '格式', '不支援'),
 }
 MESSAGES = {
+    'ig_scan_limit': instagram_limit_message('local_request_budget', 'en') + '.',
     'account': 'The download account requires attention. Check its login and cookies.',
     'storage': 'The storage check failed or free space is low.',
     'rate_limit': 'The platform is limiting requests.',
@@ -68,7 +70,12 @@ def _migrate_pending_push_alerts(db):
 def initialize():
     # Build a CASE expression from fixed, trusted literals. Triggers also run
     # on connections opened outside Python. Never copy raw error text or URLs.
-    conditions = []
+    scan_limit = instagram_limit_message('local_request_budget').replace("'", "''")
+    partial_scan_limit = ' OR '.join(
+        f"instr(NEW.message,'{prefix}{scan_limit}')=1"
+        for prefix in ('部分下載成功，已傳送可用內容。', '沒有可傳送的媒體。'))
+    conditions = [f"WHEN NEW.platform='instagram' AND (NEW.message='{scan_limit}' OR "
+                  f"(NEW.state='partial' AND ({partial_scan_limit}))) THEN 'ig_scan_limit'"]
     for code, words in REASONS.items():
         predicates = ' OR '.join(f"instr(lower(NEW.message),'{word}')>0" for word in words)
         conditions.append(f"WHEN {predicates} THEN '{code}'")
@@ -97,6 +104,10 @@ def initialize():
         DROP TRIGGER IF EXISTS admin_notice_new_user;
         DROP TRIGGER IF EXISTS admin_notice_new_tk;
         DROP TRIGGER IF EXISTS admin_notice_tk_state;
+        DROP TRIGGER IF EXISTS admin_alert_job_transition;
+        DROP TRIGGER IF EXISTS admin_alert_job_insert;
+        DROP TRIGGER IF EXISTS admin_error_job_transition;
+        DROP TRIGGER IF EXISTS admin_error_job_insert;
         CREATE TRIGGER IF NOT EXISTS admin_alert_job_transition AFTER UPDATE OF state ON jobs
           WHEN OLD.state IS NOT NEW.state AND NEW.state IN ('failed','partial','paused')
           AND COALESCE((SELECT value FROM settings WHERE key='failure_alerts'),'true')='true'
@@ -117,6 +128,11 @@ def initialize():
     """
     with c.db() as db:
         db.executescript(db_statements)
+        if 'retry_at' not in {row[1] for row in db.execute('PRAGMA table_info(admin_errors)')}:
+            db.execute('ALTER TABLE admin_errors ADD COLUMN retry_at REAL')
+        db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS admin_error_ig_wait
+                      ON admin_errors(reason,coalesce(status,0),retry_at)
+                      WHERE source='instagram' AND retry_at IS NOT NULL""")
         error_log.import_health(db)
         _migrate_pending_push_alerts(db)
         old = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -186,6 +202,8 @@ def tick(send, now=None):
     if alert['platform'] in ('push', 'push_provider'):
         from .push import HEALTH
         message = 'Push · ' + HEALTH.get(alert['reason'], MESSAGES['previous'])
+    elif alert['platform'] == 'instagram' and alert['reason'] == 'rate_limit':
+        message = 'Instagram · ' + instagram_limit_message('unknown', 'en') + '.'
     elif alert['platform'] in PLATFORMS:
         message = f"{alert['platform'].capitalize()} · {message}"
     try:

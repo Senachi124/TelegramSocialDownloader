@@ -5,6 +5,7 @@ from importlib.resources import files
 from urllib.parse import urlencode
 
 from .. import accounts, core as c, pool_checks
+from ..instagram.limit_messages import describe as instagram_limit_message
 
 
 STYLE = files(__package__).joinpath('console.css').read_text(encoding='utf-8')
@@ -224,6 +225,8 @@ def _account_record(platform, prefix, item, primary):
     entry = prefix + hidden_field('id', item['id'])
     label = escape(item['label'])
     result = _ACCOUNT_RESULTS.get(item['last_result'], 'Unknown')
+    if platform == 'instagram' and item['last_result'] in ('http_429', 'upstream_restriction'):
+        result = instagram_limit_message(item['last_result'], 'en')
     result_text = f'{result} · Cookie revision {item["revision"]}'
     return ('<div class="record"><div class="record-info">'
             + f'<strong>{label}</strong> ' + _credential_state(item['enabled'], primary)

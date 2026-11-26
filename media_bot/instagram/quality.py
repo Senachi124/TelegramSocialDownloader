@@ -9,7 +9,8 @@ import shutil
 import time
 from urllib.parse import urlsplit
 from xml.etree import ElementTree as ET
-from .. import core as c,download_size,media_preferences
+from .. import download_size,media_preferences
+from .limits import extend_cooldown
 
 
 def dynamic_range(item):
@@ -157,8 +158,8 @@ def install(result,preferences=None):
         except HTTPError as error:
             response=error.response
             if response.status==429:
-                until=time.time()+900
-                c.setting('instagram_cooldown',until);result.update(retry_at=until,wait_reason='platform')
+                until, _ = extend_cooldown(time.time()+900, 'http_429')
+                result.update(retry_at=until, wait_reason='platform', instagram_limit_reason='http_429')
                 response.close()
                 raise download_size.DownloadStopped() from None
             raise

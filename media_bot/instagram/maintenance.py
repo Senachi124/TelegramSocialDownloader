@@ -98,9 +98,9 @@ def run():
         if not identity:
             counts['identity_unavailable'] += 1
             continue
-        status, fresh = check(jar, identity)
-        if status == 'rate_limited':
-            limiter.block()
+        status, fresh = check(jar, identity, detailed_limit=True)
+        if status in ('http_429', 'upstream_restriction', 'rate_limited'):
+            limiter.block(reason='unknown' if status == 'rate_limited' else status)
             counts['rate_limited'] += 1
             break
         if status == 'updated':

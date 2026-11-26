@@ -3,13 +3,18 @@ import json
 import logging
 import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from . import core
+from .instagram.limit_messages import describe as instagram_limit_message
 
 LIMIT = 100
+HKT = ZoneInfo('Asia/Hong_Kong')
+MAX_RETRY_AT = datetime.max.replace(tzinfo=HKT, microsecond=0).timestamp()
 SCHEMA = f"""
     CREATE TABLE IF NOT EXISTS admin_errors(
-        id INTEGER PRIMARY KEY, observed REAL, source TEXT NOT NULL, reason TEXT NOT NULL, status INTEGER);
+        id INTEGER PRIMARY KEY, observed REAL, source TEXT NOT NULL, reason TEXT NOT NULL, status INTEGER, retry_at REAL);
     CREATE TRIGGER IF NOT EXISTS admin_error_limit AFTER INSERT ON admin_errors
     BEGIN
         DELETE FROM admin_errors WHERE id <=
@@ -96,6 +101,26 @@ def import_health(db):
             record_health(db, key.removeprefix('push_health.'), reason, None)
 
 
+def record_instagram_wait(reason, retry_at):
+    """Log a shared wait once per deadline across download jobs and restarts."""
+    if type(retry_at) not in (int, float) or not (0 < retry_at <= MAX_RETRY_AT):
+        return
+    status = None
+    if isinstance(reason, str) and re.fullmatch(r'http_[45][0-9]{2}', reason):
+        status = int(reason[5:])
+        reason = 'http_status'
+    elif reason not in ('local_media_quota', 'upstream_restriction'):
+        reason = 'unknown'
+    try:
+        with core.db() as db:
+            db.execute('PRAGMA busy_timeout=100')
+            db.execute("""INSERT INTO admin_errors(observed,source,reason,status,retry_at)
+                          VALUES (?,'instagram',?,?,?) ON CONFLICT DO NOTHING""",
+                       (time.time(), 'ig_wait_' + reason, status, retry_at))
+    except Exception as error:
+        logging.getLogger(__name__).warning('Instagram wait diagnostic unavailable (%s)', type(error).__name__)
+
+
 def record_send(slug, reason, status=None):
     """Diagnostics cannot delay a send checkpoint through a normal writer timeout."""
     source = 'takaneko_telegram' if slug == 'takaneko' else 'push_telegram'
@@ -119,13 +144,23 @@ def recent():
     from .admin_notifications import MESSAGES, PLATFORMS
 
     with core.db() as db:
-        rows = db.execute('SELECT observed,source,reason,status FROM admin_errors ORDER BY id DESC LIMIT ?',
+        rows = db.execute('SELECT observed,source,reason,status,retry_at FROM admin_errors ORDER BY id DESC LIMIT ?',
                           (LIMIT,)).fetchall()
     result = []
-    for observed, source, reason, status in rows:
+    for observed, source, reason, status, retry_at in rows:
         if source not in SOURCES:
             continue
-        if source in PLATFORMS:
+        if source == 'instagram' and reason.startswith('ig_wait_'):
+            cause = reason.removeprefix('ig_wait_')
+            if cause == 'http_status' and type(status) is int and 400 <= status <= 599:
+                cause = f'http_{status}'
+            message = instagram_limit_message(cause, 'en') + '.'
+            if retry_at is not None:
+                retry = datetime.fromtimestamp(retry_at, HKT)
+                message += f' Scheduled retry at {retry:%Y-%m-%d %H:%M:%S} HKT.'
+        elif source == 'instagram' and reason == 'rate_limit':
+            message = instagram_limit_message('unknown', 'en') + '.'
+        elif source in PLATFORMS:
             message = ('Telegram delivery could not be confirmed.' if reason == 'uncertain'
                        else MESSAGES.get(reason, MESSAGES['failed']))
         elif reason in ('send_http', 'send_api') and type(status) is int and 400 <= status <= 599:

@@ -47,8 +47,14 @@ def main():
             except ValueError:
                 try:until=parsedate_to_datetime(value).timestamp()
                 except Exception:until=time.time()+900
-            result.update(retry_at=max(time.time()+900,until),wait_reason='platform')
-            c.setting(platform+'_cooldown',result['retry_at'])
+            until=max(time.time()+900,until)
+            if platform == 'instagram':
+                from .instagram.limits import extend_cooldown
+                until, _ = extend_cooldown(until, 'http_429')
+                result['instagram_limit_reason'] = 'http_429'
+            else:
+                c.setting(platform+'_cooldown',until)
+            result.update(retry_at=until,wait_reason='platform')
             response.close();raise StopDownload()
         if response.status_code in (200,206):
             offset=0

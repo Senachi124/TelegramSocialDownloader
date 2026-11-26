@@ -322,6 +322,58 @@ class RuntimeTests(unittest.TestCase):
         capture.assert_not_called()
         self.assertEqual(c.job_by_id(job['id'])['retry_at'], until)
 
+    def test_instagram_single_and_batch_report_limit_source_and_keep_pending_work(self):
+        url = 'https://instagram.com/p/Example/'
+        until = time.time() + 900
+        self.broker.return_value = {'cookies': {'fixture': 'value'}, 'id': 'test', 'revision': 1}
+        cases = [
+            ({'wait_reason': 'quota'}, 'Bot 設定的 Instagram 每分鐘媒體配額', 'per-minute Instagram media limit'),
+            ({'http_errors': [429]}, 'Instagram 回應 HTTP 429', 'Instagram returned HTTP 429'),
+            ({'instagram_diagnostic': {'kind': 'rate_limited', 'status': 200}},
+             '回應內容中要求暫停請求', 'requested a cooldown in its response body'),
+            ({'instagram_diagnostic': {'kind': 'upstream_http_error', 'status': 503}},
+             'Instagram 回應 HTTP 503', 'Instagram returned HTTP 503'),
+        ]
+        for index, (fields, chinese, english) in enumerate(cases):
+            result = {'retry_at': until, 'code': 1, 'files': [], **fields}
+            with self.subTest(chinese=chinese), patch.object(w, 'disk_ok'), patch.object(w, 'capture', return_value=result):
+                single = c.enqueue('single-' + str(index), 123, url, preferences={})
+                batch = c.enqueue_batch('batch-' + str(index), 123, [url, url], 17)
+                w.download(c.job_by_id(single))
+                w.process_batch(c.job_by_id(batch))
+                for key in (single, batch):
+                    saved = c.job_by_id(key)
+                    self.assertEqual((saved['state'], saved['retry_at']), ('cooldown', until))
+                    self.assertIn(chinese, saved['message'])
+                    self.assertIn('香港時間', saved['message'])
+                    if '429' not in chinese:
+                        self.assertNotIn('429', saved['message'])
+                with c.db() as db:
+                    states = db.execute('SELECT state FROM batch_items WHERE job=?', (batch,)).fetchall()
+                    self.assertEqual([row[0] for row in states], ['pending', 'pending'])
+                _, message = pool_checks._outcome(result, self.root, platform='instagram', public=False, deadline=0)
+                self.assertIn(english, message)
+
+    def test_saved_instagram_cooldown_reports_verified_or_missing_reason_without_a_request(self):
+        from media_bot.instagram.limits import extend_cooldown
+        until = time.time() + 900
+        c.setting('instagram_cooldown', until)
+        for index, reason in enumerate(('原因未記錄', 'HTTP 429')):
+            if index:
+                extend_cooldown(until + 1, 'http_429')
+            key = c.enqueue('waiting-' + str(index), 123, 'https://instagram.com/p/Example/', preferences={})
+            with patch.object(w, 'capture') as capture:
+                w.download(c.job_by_id(key))
+                state, message = pool_checks._run({'platform': 'instagram'})
+            capture.assert_not_called()
+            self.broker.assert_not_called()
+            saved = c.job_by_id(key)
+            self.assertIn(reason, saved['message'])
+            self.assertEqual(state, 'skipped')
+            self.assertIn('HTTP 429' if index else 'cause was not recorded', message)
+            if not index:
+                self.assertNotIn('429', saved['message'])
+
     def test_successful_single_delivery_records_receipt(self):
         job = self.job(); file = self.file(job)
         w.deliver(job)

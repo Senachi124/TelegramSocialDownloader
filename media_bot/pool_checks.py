@@ -12,6 +12,8 @@ from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from . import accounts, core as c, features, storage, video
+from .instagram.limits import result_reason
+from .instagram.limit_messages import describe as instagram_limit_message
 
 
 FORM_ERRORS = {
@@ -202,9 +204,10 @@ def _run(check):
         return 'skipped', FORM_ERRORS['disabled']
     if not features.download_enabled(platform):
         return 'skipped', FORM_ERRORS['feature']
-    until = c.get_setting(platform + '_cooldown', 0)
+    until, reason = c.platform_cooldown(platform)
     if until > time.time():
-        return 'skipped', 'The platform is cooling down. Retry after ' + _until(until) + ' HKT.'
+        message = instagram_limit_message(reason, 'en') if platform == 'instagram' else 'The platform is cooling down'
+        return 'skipped', message + '. Retry after ' + _until(until) + ' HKT.'
     try:
         storage.check(download=True)
         worker.disk_ok()
@@ -249,7 +252,7 @@ def _run(check):
                                 timeout=CAPTURE_TIMEOUT)
         if result is None:
             return 'interrupted', FORM_ERRORS['disabled']
-        outcome = _outcome(result, root, public=bool(public), deadline=deadline)
+        outcome = _outcome(result, root, platform=platform, public=bool(public), deadline=deadline)
         try:
             pool, item = _current(platform, selected)
         except (OSError, ValueError, KeyError):
@@ -299,20 +302,24 @@ def _has_visual_stream(path, demuxer, timeout):
                 and str(streams[0].get('nb_read_frames', '')).isdecimal() and int(streams[0]['nb_read_frames']) > 0)
 
 
-def _outcome(result, root, *, public, deadline):
+def _outcome(result, root, *, platform, public, deadline):
     diagnostic = result.get('instagram_diagnostic') or {}
     status = diagnostic.get('status')
     redirect = diagnostic.get('redirect')
     if result.get('retry_at'):
         state, reason = 'skipped', 'The platform requested a cooldown'
-        if result.get('wait_reason') == 'quota':
+        if platform == 'instagram':
+            code = result_reason(result)
+            reason = instagram_limit_message(code, 'en')
+            if code.startswith('http_') and code != 'http_429':
+                state = 'failed'
+        elif result.get('wait_reason') == 'quota':
             reason = 'The per-minute media limit was reached'
-        elif type(status) is int and 400 <= status <= 599:
-            state = 'skipped' if status == 429 else 'failed'
-            reason = f'Instagram returned HTTP {status} and entered cooldown'
         elif 429 in (result.get('http_errors') or []):
             reason = 'The platform returned HTTP 429'
         return state, reason + '. Retry after ' + _until(result['retry_at']) + ' HKT.'
+    if platform == 'instagram' and result_reason(result) == 'local_request_budget':
+        return 'failed', instagram_limit_message('local_request_budget', 'en') + '.'
     if type(status) is int and 300 <= status < 400:
         target = {'home': 'home page', 'login': 'login page', 'verification': 'verification page'}.get(redirect)
         if target:

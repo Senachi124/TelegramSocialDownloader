@@ -21,6 +21,73 @@ class ErrorLogTests(unittest.TestCase):
         self.enterContext(patch.object(core, 'DATA', root))
         core.initialize()
 
+    def test_instagram_wait_sources_are_deduplicated_without_owner_alerts(self):
+        deadline = 1800000000
+        for reason in ('local_media_quota', 'http_429', 'upstream_restriction', 'http_503',
+                       'PRIVATE bearer token 429'):
+            error_log.record_instagram_wait(reason, deadline)
+            alerts.initialize()
+            error_log.record_instagram_wait(reason, deadline)
+        rows = error_log.recent()
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(all(r['source'] == 'Instagram downloads' for r in rows))
+        self.assertIn('not recorded', rows[0]['message'])
+        self.assertIn('HTTP 503', rows[1]['message'])
+        self.assertIn('response body', rows[2]['message'])
+        self.assertIn('HTTP 429', rows[3]['message'])
+        self.assertIn('per-minute', rows[4]['message'])
+        self.assertTrue(all('2027-01-15 16:00:00 HKT' in row['message'] for row in rows))
+        error_log.record_instagram_wait('http_429', deadline + 900)
+        self.assertEqual(len(error_log.recent()), 6)
+        with core.db() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM admin_alert_queue').fetchone())
+            self.assertNotIn('PRIVATE', str([tuple(r) for r in db.execute('SELECT * FROM admin_errors')]))
+
+    def test_instagram_waits_upgrade_existing_error_log(self):
+        with core.db() as db:
+            db.execute('DROP TABLE admin_errors')
+            db.execute("""CREATE TABLE admin_errors(id INTEGER PRIMARY KEY, observed REAL,
+                          source TEXT NOT NULL, reason TEXT NOT NULL, status INTEGER)""")
+            db.execute("INSERT INTO admin_errors(source,reason) VALUES ('instagram','rate_limit')")
+        alerts.initialize()
+        error_log.record_instagram_wait('http_429', 1800000000)
+        latest, legacy = error_log.recent()
+        self.assertIn('HKT', latest['message'])
+        self.assertNotIn('HKT', legacy['message'])
+        self.assertIn('not recorded', legacy['message'])
+
+    def test_scan_cap_and_legacy_rate_limit_alerts(self):
+        from media_bot.instagram.limit_messages import describe
+        with core.db() as db:
+            db.execute("INSERT INTO bot_users(id,state,requested,last_seen) VALUES (42,'owner',0,0)")
+            db.execute("""INSERT INTO jobs(id,platform,state,message)
+                          VALUES ('ig-scan','instagram','failed',?)""", (describe('local_request_budget'),))
+            db.execute("INSERT INTO admin_errors(source,reason) VALUES ('instagram','rate_limit')")
+            db.execute("INSERT INTO admin_alert_queue(reason,platform) VALUES ('rate_limit','instagram')")
+        rows = error_log.recent()
+        self.assertIn('not recorded', rows[0]['message'])
+        self.assertIn('request limit for this scan', rows[1]['message'])
+        send = Mock(return_value={'message_id': 1})
+        alerts.tick(send)
+        alerts.tick(send)
+        self.assertIn('request limit for this scan', send.call_args_list[0].args[1]['text'])
+        self.assertIn('not recorded', send.call_args_list[1].args[1]['text'])
+
+    def test_partial_scan_cap_preserves_local_cause_with_notice_suffix(self):
+        from media_bot.instagram.limit_messages import describe
+        cap = describe('local_request_budget')
+        with core.db() as db:
+            for idx, prefix in enumerate(('部分下載成功，已傳送可用內容。', '沒有可傳送的媒體。')):
+                db.execute("""INSERT INTO jobs(id,platform,state,message)
+                              VALUES (?,'instagram','partial',?)""", (str(idx), prefix + cap + '播放版無法以影片傳送。'))
+            db.execute("""INSERT INTO jobs(id,platform,state,message)
+                          VALUES ('other','instagram','partial',?)""", ('PRIVATE ' + cap,))
+        unrelated, *partial = error_log.recent()
+        self.assertNotIn('request limit for this scan', unrelated['message'])
+        self.assertTrue(all('request limit for this scan' in r['message'] for r in partial))
+        with core.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM admin_alert_queue WHERE reason='ig_scan_limit'").fetchone()[0], 2)
+
     def test_legacy_health_once_without_timestamp_or_owner_reminder(self):
         with core.db() as db:
             db.execute("DELETE FROM settings WHERE key='admin_errors_imported_health'")

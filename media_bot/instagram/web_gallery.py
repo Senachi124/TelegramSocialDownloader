@@ -7,7 +7,8 @@ from .. import core as c
 
 from .web_client import WebClient, WebStop
 from .timeline import pages, TimelineError
-from .policy import RequestWindow
+from .limits import active_cooldown, extend_cooldown
+from .policy import RequestWindow, WindowBlocked
 
 
 def _optional_post_errors(payload, items, shortcode):
@@ -76,24 +77,22 @@ def install_web_graphql(result):
     if version('gallery-dl') != '1.32.17':
         raise RuntimeError('Review web adapter before changing gallery-dl version')
     limiter = RequestWindow(c.DATA/'instagram-api-rate.sqlite3', policy={'windowMinutes':1,'maxRequests':10,'minIntervalSeconds':6})
-    def block(seconds=900):
-        until=max(c.get_setting('instagram_cooldown',0), time.time()+max(900,seconds))
-        limiter.block(until-time.time())
-        c.setting('instagram_cooldown',until)
-        result.update(retry_at=until, wait_reason='platform')
+    def block(seconds, reason):
+        until, active_reason = limiter.block(seconds, reason)
+        until, _ = extend_cooldown(until, active_reason)
+        result.update(retry_at=until, wait_reason='platform', instagram_limit_reason=reason)
+
     def reserve():
-        until=c.get_setting('instagram_cooldown',0)
-        if until>time.time():
-            result.update(retry_at=until, wait_reason='platform')
-            raise WebStop('platform_cooldown_active')
-        try:limiter.reserve()
-        except ValueError:
-            with limiter.connect() as db:
-                until=db.execute('SELECT blocked_until FROM state WHERE id=1').fetchone()[0]
-            if until<=time.time():raise
-            c.setting('instagram_cooldown',until)
-            result.update(retry_at=until, wait_reason='platform')
-            raise WebStop('platform_cooldown_active') from None
+        until, reason = active_cooldown()
+        if until <= time.time():
+            try:
+                limiter.reserve()
+                return
+            except WindowBlocked as error:
+                until, reason = extend_cooldown(error.until, error.reason)
+        result.update(retry_at=until, wait_reason='platform', instagram_limit_reason=reason,
+                      instagram_cooldown_active=True)
+        raise WebStop('platform_cooldown_active')
     original_init = InstagramExtractor._init
     original_finalize = InstagramExtractor.finalize
 
@@ -127,7 +126,7 @@ def install_web_graphql(result):
                 'X-CSRFToken':cookie_values['csrftoken'],
             })
             api._bot_web_session=session
-            api._bot_web_client = WebClient(session, reserve, block)
+            api._bot_web_client = WebClient(session, reserve, block_with_reason=block)
 
         return api._bot_web_client
 

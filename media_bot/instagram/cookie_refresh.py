@@ -57,7 +57,7 @@ def _failure(reason, status=0):
     return "error", None
 
 
-def check(cookies, expected_user_id):
+def check(cookies, expected_user_id, *, detailed_limit=False):
     """One fixed-origin GET. Never follow redirects, log credentials, or modify the input."""
     if not expected_user_id or expected_identity(cookies) != expected_user_id:
         return _failure("input_identity")
@@ -79,7 +79,7 @@ def check(cookies, expected_user_id):
         connection.request("GET", PATH, headers=dict(request.header_items()))
         with connection.getresponse() as response:
             if response.status == 429:
-                return "rate_limited", None
+                return ("http_429" if detailed_limit else "rate_limited"), None
             if 300 <= response.status < 400:
                 location = response.getheader("Location", "")
                 if re.match(r"^(?:https://www\.instagram\.com)?/(?:accounts/login|challenge|checkpoint)(?:/|\?|$)", location):
@@ -100,7 +100,7 @@ def check(cookies, expected_user_id):
             if ("please wait a few minutes" in message or "rate_limit" in message
                     or "too many requests" in message or "rate limit" in message
                     or "feedback_required" in message or data.get("error_type") == "rate_limit_error"):
-                return "rate_limited", None
+                return ("upstream_restriction" if detailed_limit else "rate_limited"), None
             if (response.status == 401 or any(data.get(k) for k in ("login_required", "checkpoint_required", "challenge", "checkpoint_url"))
                     or message in ("login_required", "checkpoint_required", "challenge_required")):
                 return "login_required", None

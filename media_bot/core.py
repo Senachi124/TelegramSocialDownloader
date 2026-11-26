@@ -35,7 +35,9 @@ class Connection(sqlite3.Connection):
         finally:self.close()
 
 class RateLimited(ValueError):
-    def __init__(self,until):self.until=until;super().__init__('平台限流，等待冷卻後續作')
+    def __init__(self, until, reason='unknown', platform=None):
+        self.until, self.reason, self.platform = until, reason, platform
+        super().__init__('平台限流，等待冷卻後續作')
 
 def db():
     c = sqlite3.connect(DATA/'state.sqlite3', timeout=15,factory=Connection)
@@ -268,6 +270,13 @@ def extract_message_urls(message):
     return extract(text,entities,validate_url,classify)
 
 
+def platform_cooldown(platform):
+    if platform == 'instagram':
+        from .instagram.limits import active_cooldown
+        return active_cooldown()
+    return get_setting(platform + '_cooldown', 0), None
+
+
 def reserve_media(platform,item,at=None):
     """Reserve one new media download in a persistent rolling 60-second window.
 
@@ -282,7 +291,7 @@ def reserve_media(platform,item,at=None):
         con.execute('DELETE FROM media_budget WHERE time<=?',(now-60,))
         if con.execute('SELECT 1 FROM media_budget WHERE platform=? AND item=?',(platform,item)).fetchone():return False
         row=con.execute('SELECT count(*),min(time) FROM media_budget WHERE platform=?',(platform,)).fetchone()
-        if row[0]>=limit:raise RateLimited(row[1]+60)
+        if row[0]>=limit:raise RateLimited(row[1]+60, 'local_media_quota', platform)
         con.execute('INSERT INTO media_budget VALUES (?,?,?)',(platform,item,now))
     return True
 
@@ -320,8 +329,12 @@ def resolve(url):
                     try:until=parsedate_to_datetime(value).timestamp()
                     except Exception:until=time.time()+900
                 until=max(time.time()+900,until)
-                setting(platform+'_cooldown',until)
-                raise RateLimited(until)
+                if platform == 'instagram':
+                    from .instagram.limits import extend_cooldown
+                    until, _ = extend_cooldown(until, 'http_429')
+                else:
+                    setting(platform+'_cooldown',until)
+                raise RateLimited(until, 'http_429', platform)
             if platform=='tiktok' and r.status in (401,403):
                 from .tiktok import failure_message
                 raise ValueError(failure_message('forbidden' if r.status==403 else 'login_required','post'))

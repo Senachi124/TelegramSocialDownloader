@@ -16,7 +16,9 @@ import time
 from zoneinfo import ZoneInfo
 from . import core as c
 from . import access,tiktok,video,inbox,accounts,twitter,threads,pool_checks
-from . import features,links,group_download,group_menu,limits,storage
+from . import error_log,features,links,group_download,group_menu,limits,storage
+from .instagram import limits as instagram_limits
+from .instagram.limit_messages import describe as instagram_limit_message
 from .translations import commands as translation
 from .processing import capture as capture_process
 from .processing.capture import CaptureStorageError, CaptureTimeout, disk_ok
@@ -318,7 +320,14 @@ def _report_account(platform, credential, result):
     if credential is None or (result['retry_at'] and result.get('wait_reason') == 'quota'):
         return
     failure = result.get('failure')
-    if result['retry_at']:
+    ig_reason = instagram_limits.result_reason(result) if platform == 'instagram' else None
+    if ig_reason == 'local_request_budget' or result.get('instagram_cooldown_active'):
+        return
+    if platform == 'instagram' and result['retry_at']:
+        if ig_reason in ('unknown', 'local_media_quota'):
+            return
+        outcome = ig_reason if ig_reason in ('http_429', 'upstream_restriction') else 'failed'
+    elif result['retry_at']:
         outcome = 'rate_limited'
     elif result.get('auth_required') or failure == 'login_required':
         outcome = 'auth_required'
@@ -346,12 +355,41 @@ def _start_download(job):
             AND cancel=0 AND retry_at<=?""", (job['id'], job['platform'], time.time())).rowcount)
 
 
+def _wait_for_retry(job, platform, until, reason):
+    if platform == 'instagram':
+        message = instagram_limit_message(reason)
+    elif reason == 'quota':
+        message = accounts.LABELS[platform] + ' 每分鐘媒體配額已用完'
+    else:
+        message = accounts.LABELS[platform] + ' 冷卻中'
+    retry_time = datetime.fromtimestamp(until, ZoneInfo('Asia/Hong_Kong')).strftime('%m-%d %H:%M:%S')
+    transition(job, f'{message}，將於 {retry_time}（香港時間）自動續作', state='cooldown', retry_at=until)
+    if platform == 'instagram':
+        error_log.record_instagram_wait(reason, until)
+
+
+def _defer_active_cooldown(job):
+    platform = job['platform']
+    until, reason = c.platform_cooldown(platform)
+    if until <= time.time():
+        return False
+    _wait_for_retry(job, platform, until, reason)
+    return True
+
+
+def _defer_capture(job, result):
+    if not result['retry_at']:
+        return False
+    platform = job['platform']
+    reason = instagram_limits.result_reason(result) if platform == 'instagram' else result.get('wait_reason')
+    _wait_for_retry(job, platform, result['retry_at'], reason)
+    return True
+
+
 def download(job):
     if cancelled(job) or not _start_download(job):return False
     platform=job['platform'];label=accounts.LABELS[platform]
-    retry=c.get_setting(platform+'_cooldown',0)
-    if retry>time.time():
-        c.update(job['id'],state='cooldown',retry_at=retry);status(job,label+' 冷卻至 '+datetime.fromtimestamp(retry,ZoneInfo('Asia/Hong_Kong')).isoformat(timespec='minutes'));return False
+    if _defer_active_cooldown(job):return False
     credential, cookies = _select_account(job, platform)
     if credential is not None and not cookies:
         transition(job,label+' 帳號池沒有可用 Cookie，請管理員更新或啟用已綁定帳號',state='paused');return False
@@ -362,15 +400,14 @@ def download(job):
     preferences.record_notice(job['id'],result.get('preference_notice'))
     if _cancel_oversized(job,result):return False
     _report_account(platform, credential, result)
-    if result['retry_at']:
-        c.update(job['id'],state='cooldown',retry_at=result['retry_at'])
-        reason='每分鐘媒體配額已用完' if result.get('wait_reason')=='quota' else '平台限流'
-        status(job,label+' '+reason+'，將於 '+datetime.fromtimestamp(result['retry_at'],ZoneInfo('Asia/Hong_Kong')).strftime('%H:%M:%S')+' 自動續作');return False
+    if _defer_capture(job, result):return False
     if platform in ('instagram','twitter','threads','youtube') and credential is not None and result['auth_required']:
         transition(job,label+' 此工作帳號的 Cookie 需在帳號池更新',state='paused');return False
     add_files(job,result['files'])
     reason=tiktok.failure_message(result.get('failure'),job['mode']) if platform=='tiktok' and result['code'] else ''
     if platform=='instagram' and result.get('failure')=='story_unavailable':reason='指定的限時動態已過期或目前無法存取。'
+    if platform=='instagram' and instagram_limits.result_reason(result)=='local_request_budget':
+        reason=instagram_limit_message('local_request_budget')
     if platform=='twitter' and result['code']:reason=twitter.failure_message(result.get('failure'))
     if platform=='threads' and result['code']:reason=threads.failure_message(result.get('failure'))
     if platform=='youtube' and result['code']:
@@ -454,10 +491,9 @@ def process_batch(job):
     if not _start_download(job):
         return
     try:
+        if _defer_active_cooldown(job):return
         if item['mode']=='resolve':
             status(job,'正在解析分享連結')
-            retry=c.get_setting(item['platform']+'_cooldown',0)
-            if retry>time.time():raise c.RateLimited(retry)
             url,platform,mode=_resolve_download(item['url'])
             from . import preferences
             mode,notice=preferences.route(platform,mode,url,json.loads(job.get('preferences') or '{}').get(platform,{}))
@@ -466,8 +502,6 @@ def process_batch(job):
             with c.db() as db:db.execute('UPDATE batch_items SET url=?,platform=?,mode=? WHERE job=? AND position=?',(url,platform,mode,job['id'],item['position']))
             _batch_next(job);return
         platform=item['platform'];label=accounts.LABELS[platform]
-        retry=c.get_setting(platform+'_cooldown',0)
-        if retry>time.time():raise c.RateLimited(retry)
         credential, cookies = _select_account(job, platform)
         if credential is not None and not cookies:
             if platform in ('threads','youtube'):
@@ -492,13 +526,15 @@ def process_batch(job):
         preferences.record_notice(job['id'],result.get('preference_notice'))
         if _cancel_oversized(job,result):return
         _report_account(platform, credential, result)
-        if result['retry_at']:raise c.RateLimited(result['retry_at'])
+        if _defer_capture(job, result):return
         if platform in ('threads','youtube') and credential is not None and result.get('auth_required'):
             transition(job,label+' 此工作帳號的 Cookie 需在帳號池更新',state='paused');return
         reason=''
         if result.get('auth_required'):reason=threads.failure_message('login_required') if platform=='threads' else label+' 此工作帳號的 Cookie 需在帳號池更新'
         elif result.get('failure')=='conversion_failed':reason='影片播放版轉換失敗，原檔保留並按文件交付。'
         elif platform=='instagram' and result.get('failure')=='story_unavailable':reason='指定的限時動態已過期或目前無法存取。'
+        elif platform=='instagram' and instagram_limits.result_reason(result)=='local_request_budget':
+            reason=instagram_limit_message('local_request_budget')
         elif result.get('no_media'):reason='此貼文沒有圖片或影片'
         elif platform=='youtube' and result['code']:
             from .yt_runner import youtube_failure_message
@@ -512,7 +548,8 @@ def process_batch(job):
             _register_files(db, job['id'], result['files'])
             db.execute('UPDATE batch_items SET state=?,error=? WHERE job=? AND position=?',('failed' if reason else 'done',reason,job['id'],item['position']))
     except c.RateLimited as error:
-        c.update(job['id'],state='cooldown',retry_at=error.until);status(job,'平台冷卻中，稍後自動續作');return
+        _wait_for_retry(job, error.platform or job['platform'], error.until, error.reason)
+        return
     except Exception as error:
         if c.is_busy(error):raise
         reason=str(error) if isinstance(error,ValueError) else '下載服務暫時失敗，請管理員重試'
@@ -589,10 +626,8 @@ def platform_loop(platform,stop=None):
             if job['state']=='sending':deliver(job);continue
             if job['mode']=='resolve':
                 if not _start_download(job):continue
+                if _defer_active_cooldown(job):continue
                 status(job,'正在解析分享連結')
-                if c.get_setting(platform+'_cooldown',0)>time.time():
-                    retry=c.get_setting(platform+'_cooldown');c.update(job['id'],state='cooldown',retry_at=retry)
-                    status(job,'平台冷卻中，稍後自動續作');continue
                 url,provider,mode=_resolve_download(job['url'])
                 from . import preferences
                 mode,notice=preferences.route(provider,mode,url,json.loads(job.get('preferences') or '{}').get(provider,{}))
@@ -610,8 +645,7 @@ def platform_loop(platform,stop=None):
         except c.RateLimited as error:
             try:
                 if job is not None:
-                    c.update(job['id'],state='cooldown',retry_at=error.until)
-                    status(job,'平台冷卻，稍後自動續作')
+                    _wait_for_retry(job, error.platform or platform, error.until, error.reason)
             except Exception as failure:_report_worker_error('Download cooldown checkpoint',failure)
         except Exception as error:
             if c.is_busy(error):

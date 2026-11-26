@@ -25,6 +25,12 @@ def describe_rate_policy(policy):
     return f"每 {policy['windowMinutes']} 分鐘最多 {policy['maxRequests']} 次；間隔至少 {policy['minIntervalSeconds']} 秒"
 
 
+class WindowBlocked(ValueError):
+    def __init__(self, until, reason):
+        self.until, self.reason = until, reason
+        super().__init__("Instagram 冷卻尚未結束，本次未發送請求")
+
+
 class RequestWindow:
     def __init__(self, path, clock=time.time, sleep=time.sleep, policy=None):
         self.policy = validate_rate_policy(policy)
@@ -40,6 +46,7 @@ class RequestWindow:
             db.execute("CREATE TABLE IF NOT EXISTS requests (sent_at REAL NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), blocked_until REAL NOT NULL)")
             db.execute("INSERT OR IGNORE INTO state VALUES (1,0)")
+            db.execute("CREATE TABLE IF NOT EXISTS cooldown_origin (id INTEGER PRIMARY KEY CHECK(id=1), deadline REAL, reason TEXT)")
             db.execute('CREATE TABLE IF NOT EXISTS history_coverage(id INTEGER PRIMARY KEY CHECK(id=1), since REAL NOT NULL)')
             # Old versions retained only ten minutes. A longer new policy must
             # wait for known history rather than interpreting missing rows as zero.
@@ -55,15 +62,20 @@ class RequestWindow:
         finally:
             db.close()
 
+    @staticmethod
+    def _block_state(db):
+        return db.execute("""SELECT blocked_until,coalesce(reason,'unknown')
+            FROM state LEFT JOIN cooldown_origin ON blocked_until=deadline WHERE state.id=1""").fetchone()
+
     def reserve(self):
         announced = False
         while True:
             with self.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 stamp = self.clock()
-                blocked = db.execute("SELECT blocked_until FROM state WHERE id=1").fetchone()[0]
+                blocked, reason = self._block_state(db)
                 if blocked > stamp:
-                    raise ValueError("429 冷卻尚未結束；本次未發送請求")
+                    raise WindowBlocked(blocked, reason)
                 db.execute("DELETE FROM requests WHERE sent_at<=?", (stamp - HISTORY_SECONDS,))
                 times = [row[0] for row in db.execute("SELECT sent_at FROM requests ORDER BY sent_at")]
                 recent = [sent for sent in times if sent > stamp - self.window]
@@ -76,10 +88,17 @@ class RequestWindow:
                     db.execute("INSERT INTO requests VALUES (?)", (stamp,))
                     return
             if not announced:
-                print(f"[instaloader][info] 限速等待約 {math.ceil(delay)} 秒（{self.description}；沿用歷史請求紀錄）", flush=True)
+                print(f"[instaloader][info] 本機請求速率限制，等待約 {math.ceil(delay)} 秒（{self.description}；沿用歷史請求紀錄）", flush=True)
                 announced = True
             self.sleep(min(delay, 30))
 
-    def block(self, seconds=900):
+    def block(self, seconds=900, reason='unknown'):
+        until = self.clock() + max(900, seconds)
         with self.connect() as db:
-            db.execute("UPDATE state SET blocked_until=max(blocked_until,?) WHERE id=1", (self.clock() + max(900, seconds),))
+            db.execute('BEGIN IMMEDIATE')
+            previous = self._block_state(db)
+            if previous[0] >= until:
+                return previous
+            db.execute('UPDATE state SET blocked_until=? WHERE id=1', (until,))
+            db.execute('INSERT OR REPLACE INTO cooldown_origin VALUES(1,?,?)', (until, reason))
+        return until, reason

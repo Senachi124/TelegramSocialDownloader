@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.2.3.dev1 — 2026-11-27
+
+- Update yt-dlp from 2026.10.21 to 2026.11.23 for YouTube and TikTok downloads.
+
 ## 1.2.2 — 2026-11-26
 
 - Save new YouTube session cookies after a successful account-bound download or scheduled check when YouTube confirms the account is signed in. Updates apply only to the checked account and revision. Expired or revoked sessions need a fresh browser export.
